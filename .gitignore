@@ -1,0 +1,25 @@
+## Visual Studio / .NET Build Artifacts
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+[Dd]ist/
+[Tt]est[Rr]esults/
+
+## Intermediate installer payloads (generados dinámicamente por build-installer.ps1)
+installer/MyLocalCloud.Installer/Payload/
+
+## Visual Studio Cache & User files
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+
+## Archivos de base de datos local y secretos DPAPI generados en ejecución
+*.db
+*.db-shm
+*.db-wal
+*.dpapi
+
+## Logs
+*.log

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>MyLocalCloud.UI</RootNamespace>
+    <AssemblyName>myLocalCloud</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Company>android.ar</Company>
+    <Authors>Alejandro Ferrer (android.ar)</Authors>
+    <Product>myLocalCloud</Product>
+    <Description>myLocalCloud v1.0 - Cliente Multicloud con VFS Files On-Demand. Desarrollada por android.ar - Desarrollador Alejandro Ferrer.</Description>
+    <Copyright>Copyright © 2026 android.ar - Desarrollador Alejandro Ferrer</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MyLocalCloud.Domain\MyLocalCloud.Domain.csproj" />
+    <ProjectReference Include="..\MyLocalCloud.Application\MyLocalCloud.Application.csproj" />
+    <ProjectReference Include="..\MyLocalCloud.Infrastructure\MyLocalCloud.Infrastructure.csproj" />
+    <ProjectReference Include="..\MyLocalCloud.ShellIntegration\MyLocalCloud.ShellIntegration.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Views\WinUI3\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

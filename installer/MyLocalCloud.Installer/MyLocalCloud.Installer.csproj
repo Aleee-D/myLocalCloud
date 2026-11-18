@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>myLocalCloud-Setup-v1.0</AssemblyName>
+    <RootNamespace>MyLocalCloud.Installer</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Company>android.ar</Company>
+    <Authors>Alejandro Ferrer (android.ar)</Authors>
+    <Product>Instalador de myLocalCloud v1.0</Product>
+    <Description>Instalador para Windows de myLocalCloud v1.0 — Desarrollada por android.ar (Desarrollador: Alejandro Ferrer)</Description>
+    <Copyright>Copyright © 2026 android.ar - Desarrollador Alejandro Ferrer</Copyright>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Payload\app_payload.zip" Condition="Exists('Payload\app_payload.zip')" LogicalName="MyLocalCloud.Payload.zip" />
+  </ItemGroup>
+
+</Project>

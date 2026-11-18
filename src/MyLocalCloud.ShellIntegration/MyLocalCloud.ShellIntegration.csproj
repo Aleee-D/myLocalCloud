@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>MyLocalCloud.ShellIntegration</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MyLocalCloud.Domain\MyLocalCloud.Domain.csproj" />
+    <ProjectReference Include="..\MyLocalCloud.Application\MyLocalCloud.Application.csproj" />
+    <ProjectReference Include="..\MyLocalCloud.Infrastructure\MyLocalCloud.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>
