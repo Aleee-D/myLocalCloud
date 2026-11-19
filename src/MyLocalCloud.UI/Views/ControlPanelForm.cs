@@ -41,6 +41,7 @@ public sealed class ControlPanelForm : Form
     private readonly TextBox _txtEmailOrUser;
     private readonly TextBox _txtSecretToken;
     private readonly TextBox _txtBaseVfsPath;
+    private readonly Label _lblDiskSpaceStatus;
     private readonly NumericUpDown _numSyncMinutes;
     private readonly Button _btnPauseResume;
 
@@ -173,12 +174,12 @@ public sealed class ControlPanelForm : Form
         syncBarPanel.Controls.Add(_numSyncMinutes);
         syncBarPanel.Controls.Add(btnOpenVfsFolder);
 
-        // --- 3. Panel de Registro Multi-Usuario, Unidad Virtual y Botón Aceptar/Vincular ---
+        // --- 3. Panel de Registro Multi-Usuario, Unidad Virtual y Carpeta Temporal de Descargas ---
         var addAccountGroup = new Panel
         {
             Dock = DockStyle.Top,
             Width = 1040,
-            Height = 192,
+            Height = 212,
             BackColor = PrimaryGrayCard,
             Padding = new Padding(20, 10, 20, 10)
         };
@@ -281,18 +282,18 @@ public sealed class ControlPanelForm : Form
             BorderStyle = BorderStyle.FixedSingle
         };
 
-        // Fila 2: Token/Clave + Ubicación de Carpeta Local VFS con Botón "Examinar..."
+        // Fila 2: Token/Clave + Ubicación de Carpeta Temporal de Descargas (para proteger el Disco C: del SO)
         var lblToken = new Label
         {
             Text = "Token OAuth2 / Clave (cifrado DPAPI):",
-            Location = new Point(20, 92),
+            Location = new Point(20, 90),
             AutoSize = true,
             ForeColor = PrimaryGrayDark
         };
 
         _txtSecretToken = new TextBox
         {
-            Location = new Point(20, 112),
+            Location = new Point(20, 110),
             Width = 223,
             UseSystemPasswordChar = true,
             PlaceholderText = "Token o contraseña (opcional)",
@@ -303,28 +304,29 @@ public sealed class ControlPanelForm : Form
 
         var lblBaseVfs = new Label
         {
-            Text = "Ubicación de carpeta local VFS para las unidades virtuales:",
-            Location = new Point(255, 92),
+            Text = "Carpeta Temporal de Archivos Descargados de las Nubes (cámbiala a otro disco ej. D:\\ para no llenar C:\\ del SO):",
+            Location = new Point(255, 90),
             AutoSize = true,
-            ForeColor = PrimaryGrayDark
+            Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+            ForeColor = PrimarySkyBlueDeep
         };
 
         _txtBaseVfsPath = new TextBox
         {
             Text = _viewModel.CustomBaseVfsDirectory,
-            Location = new Point(255, 112),
-            Width = 428,
+            Location = new Point(255, 110),
+            Width = 370,
             BackColor = Color.White,
             ForeColor = TextDarkGray,
             BorderStyle = BorderStyle.FixedSingle
         };
 
-        var btnBrowseVfs = CreateActionButton("📂 Examinar...", PrimaryGrayMedium, Color.White, new Point(695, 110), new Size(130, 29));
-        btnBrowseVfs.Click += (_, _) =>
+        var btnBrowseVfs = CreateActionButton("📂 Examinar...", PrimaryGrayMedium, Color.White, new Point(633, 108), new Size(120, 29));
+        btnBrowseVfs.Click += async (_, _) =>
         {
             using var folderDialog = new FolderBrowserDialog
             {
-                Description = "Selecciona la carpeta donde se alojarán los contenedores VFS de las unidades virtuales:",
+                Description = "Selecciona la carpeta temporal (preferiblemente en otro disco como D:\\) donde se guardarán todos los archivos descargados de las nubes para proteger el disco C:\\ del Sistema Operativo:",
                 SelectedPath = Directory.Exists(_txtBaseVfsPath.Text)
                     ? _txtBaseVfsPath.Text
                     : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -334,8 +336,23 @@ public sealed class ControlPanelForm : Form
             if (folderDialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(folderDialog.SelectedPath))
             {
                 _txtBaseVfsPath.Text = folderDialog.SelectedPath;
-                _viewModel.CustomBaseVfsDirectory = folderDialog.SelectedPath;
+                await ApplyTempDownloadCacheLocationAsync(folderDialog.SelectedPath);
             }
+        };
+
+        var btnApplyTempLocation = CreateActionButton("💾 Mover Descargas Aquí", PrimarySkyBlue, Color.White, new Point(760, 108), new Size(195, 29));
+        btnApplyTempLocation.Click += async (_, _) =>
+        {
+            await ApplyTempDownloadCacheLocationAsync(_txtBaseVfsPath.Text);
+        };
+
+        _lblDiskSpaceStatus = new Label
+        {
+            Text = _viewModel.TempCacheDriveSpaceStatus,
+            Location = new Point(255, 141),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 8.8f, FontStyle.Regular),
+            ForeColor = PrimaryGrayDark
         };
 
         // Fila 3: Botón Principal "✓ Aceptar Cuenta y Vincular con la Nube" + Botón "Preparar Otra Cuenta"
@@ -343,7 +360,7 @@ public sealed class ControlPanelForm : Form
             "✓ Aceptar Cuenta y Vincular con la Nube",
             PrimarySkyBlueDeep,
             Color.White,
-            new Point(20, 146),
+            new Point(20, 164),
             new Size(345, 38));
         btnAcceptAndLink.Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold);
         btnAcceptAndLink.Click += async (_, _) => await AcceptAndLinkCurrentAccountAsync();
@@ -352,7 +369,7 @@ public sealed class ControlPanelForm : Form
             "➕ Limpiar Campos para Cargar Otra Cuenta",
             PrimaryGrayMedium,
             Color.White,
-            new Point(380, 146),
+            new Point(380, 164),
             new Size(295, 38));
         btnPrepareNextAccount.Click += (_, _) =>
         {
@@ -372,7 +389,7 @@ public sealed class ControlPanelForm : Form
             lblName, _txtDisplayName,
             lblUser, _txtEmailOrUser,
             lblToken, _txtSecretToken,
-            lblBaseVfs, _txtBaseVfsPath, btnBrowseVfs,
+            lblBaseVfs, _txtBaseVfsPath, btnBrowseVfs, btnApplyTempLocation, _lblDiskSpaceStatus,
             btnAcceptAndLink,
             btnPrepareNextAccount
         ]);
@@ -524,6 +541,48 @@ public sealed class ControlPanelForm : Form
         };
     }
 
+    private async Task ApplyTempDownloadCacheLocationAsync(string selectedDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(selectedDirectory))
+        {
+            MessageBox.Show(
+                this,
+                "Por favor selecciona o escribe una ruta de carpeta válida para almacenar las descargas temporales de las nubes.",
+                "Carpeta inválida",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            int migrated = await _viewModel.RelocateTempDownloadCacheDirectoryAsync(selectedDirectory);
+            _txtBaseVfsPath.Text = _viewModel.CustomBaseVfsDirectory;
+            _lblDiskSpaceStatus.Text = _viewModel.TempCacheDriveSpaceStatus;
+            RefreshUiFromViewModel();
+
+            MessageBox.Show(
+                this,
+                $"¡Ubicación de carpeta temporal de descargas actualizada con éxito!\n\n" +
+                $"• Nueva carpeta temporal: {_viewModel.CustomBaseVfsDirectory}\n" +
+                $"• Estado del disco: {_viewModel.TempCacheDriveSpaceStatus}\n" +
+                $"• Cuentas existentes migradas y remontadas: {migrated}\n\n" +
+                $"Todos los archivos descargados de las nubes se guardarán ahora en esta ubicación para no llenar el disco C:\\ del Sistema Operativo.",
+                "Carpeta Temporal de Descargas Actualizada",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"No fue posible mover la carpeta temporal de descargas:\n{ex.Message}",
+                "Error al cambiar carpeta temporal",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
     private async Task AcceptAndLinkCurrentAccountAsync()
     {
         if (string.IsNullOrWhiteSpace(_txtDisplayName.Text) || string.IsNullOrWhiteSpace(_txtEmailOrUser.Text))
@@ -624,6 +683,7 @@ public sealed class ControlPanelForm : Form
     public void RefreshUiFromViewModel()
     {
         _lblStatus.Text = _viewModel.StatusHeadline;
+        _lblDiskSpaceStatus.Text = _viewModel.TempCacheDriveSpaceStatus;
         _btnPauseResume.Text = _viewModel.IsPaused
             ? "▶ Reanudar sincronización"
             : "⏸ Pausar sincronización";

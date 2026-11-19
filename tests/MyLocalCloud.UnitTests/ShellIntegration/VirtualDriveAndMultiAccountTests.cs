@@ -153,6 +153,24 @@ public sealed class VirtualDriveAndMultiAccountTests : IDisposable
         Assert.Contains(savedAccounts, a => a.DeliveryMode == CloudFileDeliveryMode.LocalCopy);
     }
 
+    [Fact]
+    public void CloudStorageSettingsService_PersistsCustomTempDownloadCacheDirectory_And_ReportsDriveSpace()
+    {
+        // Arrange
+        var settingsService = new CloudStorageSettingsService(_tempDir);
+        string customCacheOnDataDisk = Path.Combine(_tempDir, "CustomCloudTempCache");
+
+        // Act
+        settingsService.SaveTempDownloadCacheDirectory(customCacheOnDataDisk);
+        string loadedPath = settingsService.GetTempDownloadCacheDirectory();
+        string driveStatus = CloudStorageSettingsService.GetDriveSpaceAndOsProtectionStatus(loadedPath);
+
+        // Assert
+        Assert.Equal(Path.GetFullPath(customCacheOnDataDisk), loadedPath, StringComparer.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(loadedPath));
+        Assert.Contains("GB libres", driveStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
     public void Dispose()
     {
         var driveService = _serviceProvider.GetService<IVirtualDriveMountService>();

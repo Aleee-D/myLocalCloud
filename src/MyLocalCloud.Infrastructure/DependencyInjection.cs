@@ -30,6 +30,7 @@ public static class DependencyInjection
         string keyStorageDir = Path.Combine(baseAppData, "Security");
         string databaseFilePath = Path.Combine(baseAppData, "Data", "mylocalcloud_vfs.db");
 
+        services.AddSingleton(_ => new CloudStorageSettingsService(baseAppData));
         services.AddSingleton<IDataProtectionService>(_ => new DpapiDataProtectionService());
         services.AddSingleton<IDatabaseKeyProvider>(sp =>
             new DpapiDatabaseKeyProvider(

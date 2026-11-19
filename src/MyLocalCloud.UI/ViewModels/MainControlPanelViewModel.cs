@@ -48,12 +48,16 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
     private readonly ICloudSyncEngine _syncEngine;
     private readonly IGoogleDriveCoexistenceService? _coexistenceService;
     private readonly IVirtualDriveMountService? _driveMountService;
+    private readonly CloudStorageSettingsService? _storageSettingsService;
 
     [ObservableProperty]
     private string _statusHeadline = "myLocalCloud v1.1 está actualizado";
 
     [ObservableProperty]
     private string _coexistenceHeadline = "Coexistencia activa con Google Drive for Desktop (Unidades Virtuales aisladas)";
+
+    [ObservableProperty]
+    private string _tempCacheDriveSpaceStatus = "";
 
     [ObservableProperty]
     private bool _isSyncing;
@@ -107,7 +111,8 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         IVirtualFilePlaceholderManager placeholderManager,
         ICloudSyncEngine syncEngine,
         IGoogleDriveCoexistenceService? coexistenceService = null,
-        IVirtualDriveMountService? driveMountService = null)
+        IVirtualDriveMountService? driveMountService = null,
+        CloudStorageSettingsService? storageSettingsService = null)
     {
         _scopeFactory = scopeFactory;
         _dataProtectionService = dataProtectionService;
@@ -115,6 +120,14 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         _syncEngine = syncEngine;
         _coexistenceService = coexistenceService;
         _driveMountService = driveMountService;
+        _storageSettingsService = storageSettingsService;
+
+        if (_storageSettingsService is not null)
+        {
+            _customBaseVfsDirectory = _storageSettingsService.GetTempDownloadCacheDirectory();
+        }
+
+        _tempCacheDriveSpaceStatus = CloudStorageSettingsService.GetDriveSpaceAndOsProtectionStatus(_customBaseVfsDirectory);
 
         if (_coexistenceService is not null)
         {
@@ -229,6 +242,102 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         }
 
         RefreshAvailableDriveLetters(assignedLetters);
+        TempCacheDriveSpaceStatus = CloudStorageSettingsService.GetDriveSpaceAndOsProtectionStatus(CustomBaseVfsDirectory);
+    }
+
+    /// <summary>
+    /// Cambia la ubicación de la carpeta temporal donde se guardan todos los archivos descargados de las nubes,
+    /// moviendo automáticamente los archivos ya descargados de todas las cuentas existentes al nuevo disco (ej. D:\)
+    /// para liberar y proteger el disco C:\ del Sistema Operativo.
+    /// </summary>
+    public async Task<int> RelocateTempDownloadCacheDirectoryAsync(string newCacheDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(newCacheDirectory))
+            return 0;
+
+        string targetBaseDir = Path.GetFullPath(newCacheDirectory.Trim());
+        Directory.CreateDirectory(targetBaseDir);
+
+        CustomBaseVfsDirectory = targetBaseDir;
+        _storageSettingsService?.SaveTempDownloadCacheDirectory(targetBaseDir);
+        TempCacheDriveSpaceStatus = CloudStorageSettingsService.GetDriveSpaceAndOsProtectionStatus(targetBaseDir);
+
+        int migratedAccounts = 0;
+
+        using (IServiceScope scope = _scopeFactory.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<MyLocalCloudDbContext>();
+            await db.Database.EnsureCreatedAsync();
+
+            List<CloudAccount> accounts = await db.CloudAccounts
+                .Include(a => a.VirtualFiles)
+                .ToListAsync();
+
+            foreach (CloudAccount acc in accounts)
+            {
+                string oldAccountDir = acc.LocalSyncRootPath;
+                string accountFolderName = Path.GetFileName(oldAccountDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (string.IsNullOrWhiteSpace(accountFolderName))
+                {
+                    accountFolderName = $"VFS_{acc.ProviderType}_{acc.VirtualDriveLetter.TrimEnd(':')}_{acc.Id.ToString("N")[..6]}";
+                }
+
+                string newAccountDir = Path.Combine(targetBaseDir, accountFolderName);
+                if (string.Equals(oldAccountDir, newAccountDir, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                Directory.CreateDirectory(newAccountDir);
+
+                // Copiar todos los archivos descargados y referencias hacia la nueva carpeta temporal
+                if (Directory.Exists(oldAccountDir))
+                {
+                    await _placeholderManager.UnregisterSyncRootAsync(oldAccountDir);
+                    CopyDirectoryContentsRecursively(oldAccountDir, newAccountDir);
+                }
+
+                acc.LocalSyncRootPath = newAccountDir;
+                migratedAccounts++;
+
+                // Remontar inmediatamente la letra de unidad virtual (M:, N:, etc.) apuntando a la nueva ubicación
+                if (acc.IsEnabled)
+                {
+                    await _placeholderManager.RegisterSyncRootAsync(acc);
+                    foreach (VirtualFileItem vFile in acc.VirtualFiles)
+                    {
+                        await _placeholderManager.EnsurePlaceholderCreatedAsync(acc, vFile);
+                    }
+                }
+
+                // Eliminar la carpeta antigua del disco C: para liberar espacio del Sistema Operativo
+                if (Directory.Exists(oldAccountDir))
+                {
+                    try { Directory.Delete(oldAccountDir, recursive: true); } catch { }
+                }
+            }
+
+            await db.SaveChangesAsync();
+        }
+
+        await LoadAccountsAsync();
+        StatusHeadline = $"✓ Carpeta temporal de descargas movida a '{targetBaseDir}' ({migratedAccounts} cuenta(s) reubicadas)";
+        return migratedAccounts;
+    }
+
+    private static void CopyDirectoryContentsRecursively(string sourceDir, string targetDir)
+    {
+        Directory.CreateDirectory(targetDir);
+
+        foreach (string file in Directory.GetFiles(sourceDir))
+        {
+            string destFile = Path.Combine(targetDir, Path.GetFileName(file));
+            try { File.Copy(file, destFile, overwrite: true); } catch { }
+        }
+
+        foreach (string subDir in Directory.GetDirectories(sourceDir))
+        {
+            string destSubDir = Path.Combine(targetDir, Path.GetFileName(subDir));
+            CopyDirectoryContentsRecursively(subDir, destSubDir);
+        }
     }
 
     [RelayCommand]
