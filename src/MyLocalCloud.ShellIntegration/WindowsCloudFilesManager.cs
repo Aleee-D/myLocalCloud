@@ -29,6 +29,7 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
     private readonly IDataProtectionService _dataProtectionService;
     private readonly ICloudProviderFactory _providerFactory;
     private readonly IGoogleDriveCoexistenceService? _coexistenceService;
+    private readonly IVirtualDriveMountService? _driveMountService;
     private readonly ConcurrentDictionary<string, long> _activeConnections = new(StringComparer.OrdinalIgnoreCase);
 
     // Mantener referencia viva al delegado nativo para evitar que el GC lo recolecte mientras CfApi está conectado
@@ -38,7 +39,8 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         IServiceScopeFactory scopeFactory,
         IDataProtectionService dataProtectionService,
         ICloudProviderFactory providerFactory,
-        IGoogleDriveCoexistenceService? coexistenceService = null)
+        IGoogleDriveCoexistenceService? coexistenceService = null,
+        IVirtualDriveMountService? driveMountService = null)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
         ArgumentNullException.ThrowIfNull(dataProtectionService);
@@ -48,6 +50,7 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         _dataProtectionService = dataProtectionService;
         _providerFactory = providerFactory;
         _coexistenceService = coexistenceService;
+        _driveMountService = driveMountService;
         _fetchDataCallbackDelegate = OnFetchDataCallback;
     }
 
@@ -60,10 +63,17 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
             account.LocalSyncRootPath = _coexistenceService.EnsureIsolatedSyncRootPath(
                 account.LocalSyncRootPath,
                 account.ProviderType.ToString(),
-                account.DisplayName);
+                $"{account.DisplayName}_{account.AccountEmailOrUser}_{account.VirtualDriveLetter.TrimEnd(':')}");
         }
 
         Directory.CreateDirectory(account.LocalSyncRootPath);
+
+        // Montar la letra de unidad de disco virtual seleccionada para esta cuenta (ej. M:, N:, O:)
+        if (_driveMountService is not null && !string.IsNullOrWhiteSpace(account.VirtualDriveLetter))
+        {
+            string volumeLabel = $"myLocalCloud - {account.DisplayName} ({account.AccountEmailOrUser})";
+            _driveMountService.MountVirtualDrive(account.VirtualDriveLetter, account.LocalSyncRootPath, volumeLabel);
+        }
 
         string syncRootIdentityText = $"myLocalCloud.VFS::{account.ProviderType}::{account.Id:N}";
         byte[] identityBytes = Encoding.Unicode.GetBytes(syncRootIdentityText);
@@ -145,7 +155,7 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         return Task.CompletedTask;
     }
 
-    public Task EnsurePlaceholderCreatedAsync(
+    public async Task EnsurePlaceholderCreatedAsync(
         CloudAccount account,
         VirtualFileItem item,
         CancellationToken cancellationToken = default)
@@ -161,13 +171,32 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         if (item.IsDirectory)
         {
             Directory.CreateDirectory(fullLocalPath);
-            return Task.CompletedTask;
+            return;
         }
 
         string? parentDir = Path.GetDirectoryName(fullLocalPath);
         if (!string.IsNullOrEmpty(parentDir))
         {
             Directory.CreateDirectory(parentDir);
+        }
+
+        // Si la cuenta está configurada como Copia Local Completa, descargar el contenido en la unidad virtual
+        if (account.DeliveryMode == CloudFileDeliveryMode.LocalCopy && item.FileSizeBytes > 0)
+        {
+            try
+            {
+                await HydratePlaceholderRangeAsync(
+                    account.Id,
+                    item.RelativeLocalPath,
+                    offset: 0,
+                    length: item.FileSizeBytes,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch
+            {
+                // Si el archivo aún no fue persistido o es un archivo sintético de bienvenida, continuar como placeholder
+            }
         }
 
         // Intentar primero creación nativa mediante CfCreatePlaceholders (si la raíz está registrada en CfApi)
@@ -180,18 +209,16 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
 
         if (!createdWithCfApi && !File.Exists(fullLocalPath))
         {
-            // Fallback seguro en NTFS: crear marcador de posición de 0 bytes listo para hidratación a petición
+            // Fallback seguro en NTFS: crear marcador de posición de referencia (0 bytes) listo para hidratación al abrir
             using (FileStream fs = File.Create(fullLocalPath))
             {
-                // Archivo placeholder de 0 bytes en disco hasta que se hidrate
+                // Archivo placeholder de 0 bytes en la unidad virtual hasta que se abra y descargue de la nube
             }
             DateTime validModifiedUtc = item.RemoteModifiedAtUtc.Year >= 1601
                 ? item.RemoteModifiedAtUtc.UtcDateTime
                 : DateTime.UtcNow;
             File.SetLastWriteTimeUtc(fullLocalPath, validModifiedUtc);
         }
-
-        return Task.CompletedTask;
     }
 
     public async Task HydratePlaceholderRangeAsync(

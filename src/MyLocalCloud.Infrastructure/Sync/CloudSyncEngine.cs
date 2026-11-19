@@ -236,6 +236,11 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
         if (account is null || !account.IsEnabled)
             return 0;
 
+        if (_placeholderManager is not null)
+        {
+            await _placeholderManager.RegisterSyncRootAsync(account, cancellationToken).ConfigureAwait(false);
+        }
+
         CredentialSecret secret = _dataProtectionService.UnprotectSecret<CredentialSecret>(account.EncryptedCredentialBlob);
         ICloudStorageProvider provider = _providerFactory.GetProvider(account.ProviderType);
 

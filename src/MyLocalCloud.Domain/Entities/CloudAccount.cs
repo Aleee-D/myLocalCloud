@@ -3,9 +3,9 @@ using MyLocalCloud.Domain.Enums;
 namespace MyLocalCloud.Domain.Entities;
 
 /// <summary>
-/// Representa una cuenta conectada a un proveedor (Google Drive, OneDrive, Dropbox, FTP o MEGA).
-/// El blob de credenciales (<see cref="EncryptedCredentialBlob"/>) está protegido con Windows DPAPI
-/// además de residir en la base de datos SQLCipher cifrada con AES-256.
+/// Representa una cuenta de usuario conectada a un proveedor (Google Drive, OneDrive, Dropbox, FTP o MEGA).
+/// Permite registrar múltiples cuentas del mismo proveedor o de distintos proveedores, asignando a cada una
+/// su propia letra de unidad de disco virtual (ej. M:, N:, O:) para aprovechar el espacio de cada cuenta.
 /// </summary>
 public sealed class CloudAccount
 {
@@ -14,18 +14,27 @@ public sealed class CloudAccount
     public CloudProviderType ProviderType { get; set; }
 
     /// <summary>
-    /// Nombre descriptivo elegido por el usuario (ej. "Google Drive Trabajo", "MEGA Backups").
+    /// Nombre descriptivo elegido por el usuario (ej. "Google Drive Personal 1", "Google Drive Trabajo 2", "MEGA Fotos").
     /// </summary>
     public required string DisplayName { get; set; }
 
     /// <summary>
-    /// Identificador o correo electrónico de la cuenta en el proveedor remoto.
+    /// Identificador o correo electrónico del usuario en el proveedor remoto.
     /// </summary>
     public required string AccountEmailOrUser { get; set; }
 
     /// <summary>
-    /// Ruta absoluta de la raíz de sincronización local registrada en Windows CfApi
-    /// (ej. C:\Users\Usuario\myLocalCloud\GoogleDrive_Trabajo).
+    /// Letra de unidad de disco virtual asignada en Windows Explorer (ej. "M:", "N:", "O:", "Z:").
+    /// </summary>
+    public string VirtualDriveLetter { get; set; } = "M:";
+
+    /// <summary>
+    /// Modo de entrega de archivos en la unidad virtual: Referencia On-Demand (descarga al abrir) o Copia Local.
+    /// </summary>
+    public CloudFileDeliveryMode DeliveryMode { get; set; } = CloudFileDeliveryMode.OnDemandReference;
+
+    /// <summary>
+    /// Ruta absoluta de la raíz de sincronización local respaldada en NTFS y registrada en Windows CfApi.
     /// </summary>
     public required string LocalSyncRootPath { get; set; }
 

@@ -6,9 +6,7 @@ namespace MyLocalCloud.Infrastructure.Persistence;
 
 /// <summary>
 /// Contexto de Entity Framework Core respaldado por SQLite + SQLCipher (AES-256 a nivel de archivo).
-/// Almacena perfiles de cuentas multicloud, mapeo de nodos del VFS y la cola del motor de sincronización.
-/// Configura conversión nativa de <see cref="DateTimeOffset"/> a entero binario de 64 bits para que SQLite
-/// soporte cláusulas <c>ORDER BY</c> y comparaciones (<c>&lt;=</c>, <c>&gt;=</c>) directamente en SQL.
+/// Almacena perfiles de múltiples cuentas por nube, letras de unidad virtual, mapeo de nodos del VFS y la cola de sincronización.
 /// </summary>
 public sealed class MyLocalCloudDbContext : DbContext
 {
@@ -27,7 +25,6 @@ public sealed class MyLocalCloudDbContext : DbContext
     {
         base.ConfigureConventions(configurationBuilder);
 
-        // SQLite no soporta expresiones DateTimeOffset en ORDER BY ni comparaciones a menos que se conviertan a entero binario
         configurationBuilder
             .Properties<DateTimeOffset>()
             .HaveConversion<DateTimeOffsetToBinaryConverter>();
@@ -53,6 +50,13 @@ public sealed class MyLocalCloudDbContext : DbContext
             entity.Property(x => x.AccountEmailOrUser)
                 .IsRequired()
                 .HasMaxLength(256);
+
+            entity.Property(x => x.VirtualDriveLetter)
+                .IsRequired()
+                .HasMaxLength(8);
+
+            entity.Property(x => x.DeliveryMode)
+                .IsRequired();
 
             entity.Property(x => x.LocalSyncRootPath)
                 .IsRequired()

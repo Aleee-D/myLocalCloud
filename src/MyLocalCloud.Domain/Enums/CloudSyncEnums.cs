@@ -13,12 +13,29 @@ public enum CloudProviderType
 }
 
 /// <summary>
+/// Modo de disponibilidad de los archivos en la unidad de disco virtual asignada a la cuenta.
+/// </summary>
+public enum CloudFileDeliveryMode
+{
+    /// <summary>
+    /// Los archivos aparecen como referencias/marcadores de posición (0 bytes locales) en la unidad virtual
+    /// y se descargan automáticamente de la nube en el mismo momento en que el usuario los abre.
+    /// </summary>
+    OnDemandReference = 0,
+
+    /// <summary>
+    /// Los archivos se descargan y mantienen como copia local completa dentro de la unidad virtual.
+    /// </summary>
+    LocalCopy = 1
+}
+
+/// <summary>
 /// Estado de hidratación del archivo dentro del Sistema de Archivos Virtual (Windows CfApi).
 /// </summary>
 public enum HydrationState
 {
     /// <summary>
-    /// Solo existe el marcador de posición (placeholder) en el disco local; 0 bytes ocupados.
+    /// Solo existe el marcador de posición (placeholder de referencia) en la unidad virtual; 0 bytes ocupados.
     /// </summary>
     PlaceholderOnly = 0,
 
@@ -33,7 +50,7 @@ public enum HydrationState
     FullyHydrated = 2,
 
     /// <summary>
-    /// El usuario marcó "Mantener siempre en este dispositivo".
+    /// El usuario marcó "Mantener siempre copia local en este dispositivo".
     /// </summary>
     PinnedLocally = 3
 }

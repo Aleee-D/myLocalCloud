@@ -7,9 +7,9 @@ using MyLocalCloud.UI.Views;
 namespace MyLocalCloud.UI.Tray;
 
 /// <summary>
-/// Contexto de aplicación que aloja el icono de myLocalCloud en el área de notificación
-/// de la barra de tareas de Windows (cerca del reloj, igual que Google Drive for Desktop)
-/// y coordina la sincronización periódica en segundo plano.
+/// Contexto de aplicación que aloja el icono del Árbol con Copa de Nube de myLocalCloud v1.1
+/// en el área de notificación de la barra de tareas de Windows (cerca del reloj, igual que Google Drive)
+/// y coordina la sincronización periódica y el montaje de unidades virtuales en segundo plano.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class SystemTrayApplicationContext : ApplicationContext
@@ -27,19 +27,19 @@ public sealed class SystemTrayApplicationContext : ApplicationContext
     {
         _syncEngine = syncEngine;
 
-        _statusMenuItem = new ToolStripMenuItem("Estado: Sincronización periódica activa")
+        _statusMenuItem = new ToolStripMenuItem("Estado: Sincronización periódica v1.1 activa")
         {
             Enabled = false
         };
 
-        var openPanelItem = new ToolStripMenuItem("Abrir Panel de Control de myLocalCloud", null, (_, _) => ShowControlPanel())
+        var openPanelItem = new ToolStripMenuItem("Abrir Panel de Control de myLocalCloud v1.1", null, (_, _) => ShowControlPanel())
         {
             Font = new Font("Segoe UI", 9f, FontStyle.Bold)
         };
 
-        var openFolderItem = new ToolStripMenuItem("Abrir carpeta myLocalCloud en Explorador", null, (_, _) => ControlPanelForm.OpenVfsRootInExplorer());
+        var openFolderItem = new ToolStripMenuItem("Abrir carpeta raíz myLocalCloud en Explorador", null, (_, _) => ControlPanelForm.OpenVfsRootInExplorer());
 
-        var syncNowItem = new ToolStripMenuItem("Sincronizar ahora", null, async (_, _) => await _controlPanelForm!.TriggerSyncNowAsync());
+        var syncNowItem = new ToolStripMenuItem("Sincronizar todas las cuentas y unidades ahora", null, async (_, _) => await _controlPanelForm!.TriggerSyncNowAsync());
 
         _pauseResumeMenuItem = new ToolStripMenuItem("Pausar sincronización periódica", null, (_, _) =>
         {
@@ -48,7 +48,7 @@ public sealed class SystemTrayApplicationContext : ApplicationContext
         });
 
         var aboutVersionItem = new ToolStripMenuItem(
-            "Versión 1.0 (android.ar - Alejandro Ferrer)",
+            "Versión 1.1 (android.ar - Alejandro Ferrer)",
             null,
             (_, _) => ControlPanelForm.ShowOfficialVersionDialog(_controlPanelForm));
 
@@ -69,7 +69,7 @@ public sealed class SystemTrayApplicationContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon = CloudIconGenerator.CreateCloudTrayIcon(),
-            Text = "myLocalCloud v1.0 — android.ar (Alejandro Ferrer)",
+            Text = "myLocalCloud v1.1 — android.ar (Alejandro Ferrer)",
             ContextMenuStrip = contextMenu,
             Visible = true
         };
@@ -90,6 +90,9 @@ public sealed class SystemTrayApplicationContext : ApplicationContext
             UpdateTrayState(snapshot);
         };
 
+        // Cargar y montar todas las letras de unidad virtual registradas al arrancar
+        _ = viewModel.LoadAccountsCommand.ExecuteAsync(null);
+
         // Iniciar el motor de sincronización periódica en segundo plano (cada 2 minutos por defecto)
         _syncEngine.StartPeriodicSync(TimeSpan.FromMinutes(2));
 
@@ -100,7 +103,7 @@ public sealed class SystemTrayApplicationContext : ApplicationContext
         else
         {
             ShowNotificationBalloon(
-                "myLocalCloud v1.0 está activo junto al reloj y sincronizando periódicamente (Desarrollada por android.ar - Alejandro Ferrer).");
+                "myLocalCloud v1.1 está activo junto al reloj con tus unidades virtuales montadas (Desarrollada por android.ar - Alejandro Ferrer).");
         }
     }
 

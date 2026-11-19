@@ -8,13 +8,13 @@
     <AssemblyName>myLocalCloud</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     <Company>android.ar</Company>
     <Authors>Alejandro Ferrer (android.ar)</Authors>
     <Product>myLocalCloud</Product>
-    <Description>myLocalCloud v1.0 - Cliente Multicloud con VFS Files On-Demand. Desarrollada por android.ar - Desarrollador Alejandro Ferrer.</Description>
+    <Description>myLocalCloud v1.1 - Cliente Multicloud con Unidades de Disco Virtuales (Files On-Demand). Desarrollada por android.ar - Desarrollador Alejandro Ferrer.</Description>
     <Copyright>Copyright © 2026 android.ar - Desarrollador Alejandro Ferrer</Copyright>
   </PropertyGroup>
 

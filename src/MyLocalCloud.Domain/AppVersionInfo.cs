@@ -6,24 +6,26 @@ namespace MyLocalCloud.Domain;
 public static class AppVersionInfo
 {
     public const string AppName = "myLocalCloud";
-    public const string Version = "1.0";
-    public const string FullSemanticVersion = "1.0.0.0";
+    public const string Version = "1.1";
+    public const string FullSemanticVersion = "1.1.0.0";
     public const string Organization = "android.ar";
     public const string Developer = "Alejandro Ferrer";
 
     public const string OfficialVersionMessage =
-        "myLocalCloud - Versión 1.0 | Desarrollada por android.ar (Desarrollador: Alejandro Ferrer)";
+        "myLocalCloud - Versión 1.1 | Desarrollada por android.ar (Desarrollador: Alejandro Ferrer)";
 
     public const string DetailedAboutMessage =
         """
-        myLocalCloud — Cliente Multicloud con Sistema de Archivos Virtual (Files On-Demand)
-        Versión: 1.0
+        myLocalCloud — Cliente Multicloud con Unidades de Disco Virtuales (Files On-Demand)
+        Versión: 1.1
         Desarrollada por: android.ar
         Desarrollador: Alejandro Ferrer
 
-        Arquitectura de Seguridad:
-        • Credenciales OAuth 2.0, FTP y MEGA protegidas con Windows DPAPI (CurrentUser).
-        • Base de datos local SQLite cifrada íntegramente con SQLCipher AES-256.
-        • Integración nativa con el Explorador de Windows mediante Cloud Files API (CfApi).
+        Novedades de la Versión 1.1:
+        • Montaje de letra de unidad de disco virtual (ej. M:, N:, O:, Z:) por cada usuario/nube.
+        • Soporte multi-cuenta para registrar múltiples usuarios de la misma nube o de diferentes nubes y aprovechar el espacio de cada cuenta.
+        • Archivos disponibles como referencia en la nube (se descargan en el acto al abrirlos) o como copia local.
+        • Nuevo diseño visual con paleta Celeste y Gris y nuevo logo (Árbol con copa de Nube).
+        • Credenciales protegidas con Windows DPAPI y base de datos cifrada con SQLCipher AES-256.
         """;
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.Versioning;
@@ -10,7 +11,7 @@ namespace MyLocalCloud.Installer;
 internal static class InstallerProgram
 {
     public const string AppName = "myLocalCloud";
-    public const string AppVersion = "1.0";
+    public const string AppVersion = "1.1";
     public const string Organization = "android.ar";
     public const string Developer = "Alejandro Ferrer";
     public const string FullPublisher = "android.ar (Desarrollador: Alejandro Ferrer)";
@@ -70,7 +71,7 @@ internal static class InstallerProgram
 
         Directory.CreateDirectory(targetDir);
 
-        // 1. Extraer el paquete embebido de myLocalCloud
+        // 1. Extraer el paquete embebido de myLocalCloud v1.1
         using Stream? payloadStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("MyLocalCloud.Payload.zip")
             ?? throw new InvalidOperationException("No se encontró el paquete embebido de la aplicación dentro del instalador.");
 
@@ -99,7 +100,7 @@ internal static class InstallerProgram
             startMenuShortcut,
             mainExePath,
             "",
-            "myLocalCloud v1.0 — Desarrollada por android.ar (Alejandro Ferrer)");
+            "myLocalCloud v1.1 — Desarrollada por android.ar (Alejandro Ferrer)");
 
         if (createDesktopShortcut)
         {
@@ -110,7 +111,7 @@ internal static class InstallerProgram
                 desktopShortcut,
                 mainExePath,
                 "",
-                "myLocalCloud v1.0 — Desarrollada por android.ar (Alejandro Ferrer)");
+                "myLocalCloud v1.1 — Desarrollada por android.ar (Alejandro Ferrer)");
         }
 
         // 4. Registrar inicio automático junto al reloj de Windows (como Google Drive)
@@ -129,12 +130,12 @@ internal static class InstallerProgram
             }
         }
 
-        // 5. Registrar en "Aplicaciones instaladas" de Windows con versión 1.0 y autoría android.ar / Alejandro Ferrer
+        // 5. Registrar en "Aplicaciones instaladas" de Windows con versión 1.1 y autoría android.ar / Alejandro Ferrer
         using (RegistryKey? uninstallKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\myLocalCloud"))
         {
             if (uninstallKey is not null)
             {
-                uninstallKey.SetValue("DisplayName", "myLocalCloud (Files On-Demand VFS)");
+                uninstallKey.SetValue("DisplayName", "myLocalCloud v1.1 (Unidades Virtuales Multicloud VFS)");
                 uninstallKey.SetValue("DisplayVersion", AppVersion);
                 uninstallKey.SetValue("Publisher", FullPublisher);
                 uninstallKey.SetValue("DisplayIcon", mainExePath);
@@ -142,7 +143,7 @@ internal static class InstallerProgram
                 uninstallKey.SetValue("UninstallString", $"\"{uninstallerPath}\" --uninstall");
                 uninstallKey.SetValue("NoModify", 1, RegistryValueKind.DWord);
                 uninstallKey.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-                uninstallKey.SetValue("Comments", "Versión 1.0 - Desarrollada por android.ar | Desarrollador: Alejandro Ferrer");
+                uninstallKey.SetValue("Comments", "Versión 1.1 - Desarrollada por android.ar | Desarrollador: Alejandro Ferrer");
             }
         }
 
@@ -173,9 +174,9 @@ internal static class InstallerProgram
         if (File.Exists(startMenuShortcut)) try { File.Delete(startMenuShortcut); } catch { }
 
         MessageBox.Show(
-            "myLocalCloud v1.0 se ha desinstalado correctamente de este equipo.\n\n" +
+            "myLocalCloud v1.1 se ha desinstalado correctamente de este equipo.\n\n" +
             "Desarrollada por android.ar — Desarrollador: Alejandro Ferrer",
-            "Desinstalación de myLocalCloud",
+            "Desinstalación de myLocalCloud v1.1",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
     }
@@ -220,49 +221,66 @@ internal sealed class SetupWizardForm : Form
 
     public SetupWizardForm(string defaultInstallDir)
     {
-        Text = "Instalador de myLocalCloud — Versión 1.0 (android.ar)";
-        Size = new Size(640, 470);
+        // Paleta Primaria Celeste y Gris
+        Color grayPrimary = Color.FromArgb(71, 85, 105);
+        Color graySurface = Color.FromArgb(226, 232, 240);
+        Color skyBluePrimary = Color.FromArgb(14, 165, 233);
+        Color skyBlueLight = Color.FromArgb(56, 189, 248);
+        Color textDark = Color.FromArgb(30, 41, 59);
+
+        Text = "Instalador de myLocalCloud — Versión 1.1 (android.ar)";
+        Size = new Size(660, 485);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(15, 23, 42);
-        ForeColor = Color.White;
+        BackColor = graySurface;
+        ForeColor = textDark;
         Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
 
         var bannerPanel = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 95,
-            BackColor = Color.FromArgb(30, 41, 59)
+            Height = 98,
+            BackColor = grayPrimary
+        };
+
+        var logoBox = new PictureBox
+        {
+            Image = CreateCloudTreeInstallerLogo(68),
+            SizeMode = PictureBoxSizeMode.Zoom,
+            Location = new Point(20, 15),
+            Size = new Size(68, 68),
+            BackColor = Color.Transparent
         };
 
         var lblTitle = new Label
         {
-            Text = "Instalar myLocalCloud para Windows",
+            Text = "Instalar myLocalCloud v1.1 para Windows",
             Font = new Font("Segoe UI Semibold", 16f, FontStyle.Bold),
-            ForeColor = Color.White,
+            ForeColor = Color.FromArgb(224, 242, 254),
             AutoSize = true,
-            Location = new Point(24, 16)
+            Location = new Point(100, 16)
         };
 
         var lblSubtitle = new Label
         {
-            Text = "Versión 1.0 — Desarrollada por android.ar | Desarrollador: Alejandro Ferrer",
+            Text = "Versión 1.1 — Desarrollada por android.ar | Desarrollador: Alejandro Ferrer",
             Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(56, 189, 248),
+            ForeColor = skyBlueLight,
             AutoSize = true,
-            Location = new Point(26, 54)
+            Location = new Point(102, 54)
         };
 
+        bannerPanel.Controls.Add(logoBox);
         bannerPanel.Controls.Add(lblTitle);
         bannerPanel.Controls.Add(lblSubtitle);
 
         var lblDesc = new Label
         {
-            Text = "Este asistente instalará myLocalCloud v1.0 en tu equipo. La aplicación se ubica junto al reloj\n" +
-                   "en la barra de tareas (como Google Drive) y sincroniza periódicamente tus nubes con\n" +
-                   "cifrado local Windows DPAPI + SQLCipher AES-256.",
-            ForeColor = Color.FromArgb(203, 213, 225),
+            Text = "Este asistente instalará myLocalCloud v1.1 (Paleta Celeste y Gris, Logo Árbol-Nube).\n" +
+                   "Permite registrar múltiples usuarios de la misma nube o distintas nubes y montar para cada uno\n" +
+                   "una letra de unidad de disco virtual (M:, N:, O:...) con descarga en el acto al abrir archivos.",
+            ForeColor = textDark,
             AutoSize = true,
             Location = new Point(24, 112)
         };
@@ -270,18 +288,19 @@ internal sealed class SetupWizardForm : Form
         var lblPath = new Label
         {
             Text = "Carpeta de instalación:",
-            ForeColor = Color.FromArgb(148, 163, 184),
+            ForeColor = grayPrimary,
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(24, 182)
+            Location = new Point(24, 184)
         };
 
         _txtInstallPath = new TextBox
         {
             Text = defaultInstallDir,
-            Location = new Point(24, 206),
-            Width = 570,
-            BackColor = Color.FromArgb(30, 41, 59),
-            ForeColor = Color.White,
+            Location = new Point(24, 208),
+            Width = 590,
+            BackColor = Color.White,
+            ForeColor = textDark,
             BorderStyle = BorderStyle.FixedSingle
         };
 
@@ -290,8 +309,8 @@ internal sealed class SetupWizardForm : Form
             Text = "Crear icono de acceso directo en el Escritorio",
             Checked = true,
             AutoSize = true,
-            Location = new Point(24, 248),
-            ForeColor = Color.White
+            Location = new Point(24, 250),
+            ForeColor = textDark
         };
 
         _chkStartWithWindows = new CheckBox
@@ -299,45 +318,47 @@ internal sealed class SetupWizardForm : Form
             Text = "Iniciar automáticamente en la barra de tareas cerca del reloj al iniciar Windows",
             Checked = true,
             AutoSize = true,
-            Location = new Point(24, 278),
-            ForeColor = Color.White
+            Location = new Point(24, 280),
+            ForeColor = textDark
         };
 
         _chkLaunchAfterInstall = new CheckBox
         {
-            Text = "Ejecutar myLocalCloud v1.0 al finalizar la instalación",
+            Text = "Ejecutar myLocalCloud v1.1 al finalizar la instalación",
             Checked = true,
             AutoSize = true,
-            Location = new Point(24, 308),
-            ForeColor = Color.White
+            Location = new Point(24, 310),
+            ForeColor = textDark
         };
 
         _progressBar = new ProgressBar
         {
-            Location = new Point(24, 345),
-            Width = 570,
+            Location = new Point(24, 348),
+            Width = 590,
             Height = 18,
             Style = ProgressBarStyle.Continuous
         };
 
         _lblStatus = new Label
         {
-            Text = "Listo para instalar myLocalCloud v1.0 (android.ar - Alejandro Ferrer)",
-            ForeColor = Color.FromArgb(148, 163, 184),
+            Text = "Listo para instalar myLocalCloud v1.1 (android.ar - Alejandro Ferrer)",
+            ForeColor = grayPrimary,
             AutoSize = true,
-            Location = new Point(24, 370)
+            Location = new Point(24, 374)
         };
 
         _btnInstall = new Button
         {
-            Text = "Instalar myLocalCloud v1.0",
-            BackColor = Color.FromArgb(14, 165, 233),
+            Text = "Instalar myLocalCloud v1.1",
+            BackColor = skyBluePrimary,
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
-            Size = new Size(210, 38),
-            Location = new Point(384, 382),
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+            Size = new Size(220, 40),
+            Location = new Point(394, 390),
             Cursor = Cursors.Hand
         };
+        _btnInstall.FlatAppearance.BorderSize = 0;
         _btnInstall.Click += async (_, _) => await RunInstallAsync();
 
         Controls.AddRange([
@@ -354,11 +375,52 @@ internal sealed class SetupWizardForm : Form
         ]);
     }
 
+    private static Bitmap CreateCloudTreeInstallerLogo(int size)
+    {
+        var bmp = new Bitmap(size, size);
+        using Graphics g = Graphics.FromImage(bmp);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+        float scale = size / 64f;
+        g.ScaleTransform(scale, scale);
+
+        // Tronco y ramas del árbol en Gris Plata
+        using (var trunkBrush = new SolidBrush(Color.FromArgb(203, 213, 225)))
+        {
+            PointF[] trunk =
+            [
+                new PointF(29.5f, 34f),
+                new PointF(34.5f, 34f),
+                new PointF(37f, 52f),
+                new PointF(41f, 56f),
+                new PointF(23f, 56f),
+                new PointF(27f, 52f)
+            ];
+            g.FillPolygon(trunkBrush, trunk);
+        }
+
+        // Copa del árbol en forma de Nube Celeste
+        using (var cloudBrush = new LinearGradientBrush(
+            new RectangleF(10, 10, 44, 28),
+            Color.FromArgb(224, 242, 254),
+            Color.FromArgb(14, 165, 233),
+            90f))
+        {
+            g.FillEllipse(cloudBrush, 12, 20, 17, 15);
+            g.FillEllipse(cloudBrush, 18, 14, 16, 16);
+            g.FillEllipse(cloudBrush, 24, 11, 19, 19);
+            g.FillEllipse(cloudBrush, 35, 19, 17, 16);
+            g.FillRectangle(cloudBrush, 19, 23, 26, 12);
+        }
+
+        return bmp;
+    }
+
     private async Task RunInstallAsync()
     {
         _btnInstall.Enabled = false;
         _progressBar.Value = 25;
-        _lblStatus.Text = "Extrayendo archivos cifrados y registrando servicios...";
+        _lblStatus.Text = "Extrayendo archivos cifrados y registrando servicios v1.1...";
 
         try
         {
@@ -370,15 +432,15 @@ internal sealed class SetupWizardForm : Form
             await Task.Run(() => InstallerProgram.InstallApplication(targetDir, desktop, autorun, launch));
 
             _progressBar.Value = 100;
-            _lblStatus.Text = "¡Instalación completada con éxito!";
+            _lblStatus.Text = "¡Instalación de v1.1 completada con éxito!";
 
             MessageBox.Show(
                 this,
-                "myLocalCloud — Versión 1.0 se instaló correctamente.\n\n" +
+                "myLocalCloud — Versión 1.1 se instaló correctamente.\n\n" +
                 "Desarrollada por: android.ar\n" +
                 "Desarrollador: Alejandro Ferrer\n\n" +
-                "Encontrarás el icono de myLocalCloud en la barra de tareas cerca del reloj de Windows.",
-                "Instalación completada — myLocalCloud v1.0",
+                "Encontrarás el nuevo icono del Árbol con copa de Nube cerca del reloj de Windows.",
+                "Instalación completada — myLocalCloud v1.1",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
 

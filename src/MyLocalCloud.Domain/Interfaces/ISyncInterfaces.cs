@@ -15,12 +15,45 @@ public sealed record SyncStatusSnapshot(
     DateTimeOffset? NextScheduledSyncAtUtc);
 
 /// <summary>
+/// Servicio que monta y desmonta letras de unidad de disco virtual en Windows (ej. M:, N:, O:, Z:)
+/// asociadas a las raíces virtuales de cada cuenta de usuario multicloud.
+/// </summary>
+public interface IVirtualDriveMountService
+{
+    /// <summary>
+    /// Devuelve las letras de unidad disponibles en el sistema (excluyendo unidades físicas y letras ya asignadas).
+    /// </summary>
+    IReadOnlyList<string> GetAvailableDriveLetters(IEnumerable<string>? currentlyAssignedLetters = null);
+
+    /// <summary>
+    /// Normaliza una letra de unidad al formato "X:".
+    /// </summary>
+    string NormalizeDriveLetter(string driveLetter);
+
+    /// <summary>
+    /// Monta una carpeta de sincronización VFS como una letra de unidad de disco virtual en el Explorador de Windows.
+    /// </summary>
+    bool MountVirtualDrive(string driveLetter, string localSyncRootPath, string volumeLabel);
+
+    /// <summary>
+    /// Desmonta una letra de unidad de disco virtual previamente registrada por myLocalCloud.
+    /// </summary>
+    bool UnmountVirtualDrive(string driveLetter);
+
+    /// <summary>
+    /// Verifica si la letra de unidad indicada está montada actualmente.
+    /// </summary>
+    bool IsDriveMounted(string driveLetter);
+}
+
+/// <summary>
 /// Abstracción para el gestor de raíces virtuales y marcadores de posición (placeholders) de Windows CfApi.
 /// </summary>
 public interface IVirtualFilePlaceholderManager
 {
     /// <summary>
-    /// Registra una carpeta local como raíz de sincronización (Sync Root) en el Explorador de Windows.
+    /// Registra una carpeta local como raíz de sincronización (Sync Root) en el Explorador de Windows
+    /// y activa la vigilancia de hidratación bajo demanda al abrir archivos.
     /// </summary>
     Task RegisterSyncRootAsync(CloudAccount account, CancellationToken cancellationToken = default);
 
@@ -30,7 +63,8 @@ public interface IVirtualFilePlaceholderManager
     Task UnregisterSyncRootAsync(string localSyncRootPath, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Crea o actualiza un marcador de posición (placeholder de 0 bytes en disco) para un archivo o carpeta remota.
+    /// Crea o actualiza un marcador de posición (referencia de 0 bytes en disco o copia local según configuración)
+    /// para un archivo o carpeta remota dentro de la unidad virtual de la cuenta.
     /// </summary>
     Task EnsurePlaceholderCreatedAsync(
         CloudAccount account,
@@ -38,7 +72,7 @@ public interface IVirtualFilePlaceholderManager
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Hidrata (descarga bajo demanda por chunks) un archivo solicitado por el Explorador de Windows.
+    /// Hidrata (descarga bajo demanda por chunks en el mismo momento en que se abre) un archivo de referencia.
     /// </summary>
     Task HydratePlaceholderRangeAsync(
         Guid cloudAccountId,

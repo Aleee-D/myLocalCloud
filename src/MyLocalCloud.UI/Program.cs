@@ -15,7 +15,6 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        // Soporte para consulta rápida de versión por línea de comandos (--version)
         if (args.Any(a => string.Equals(a, "--version", StringComparison.OrdinalIgnoreCase) ||
                           string.Equals(a, "-v", StringComparison.OrdinalIgnoreCase)))
         {
@@ -23,8 +22,7 @@ internal static class Program
             return;
         }
 
-        // Garantizar instancia única de myLocalCloud en la bandeja del sistema (aislado de GoogleDriveFS)
-        using var singleInstanceMutex = new Mutex(true, "Local\\myLocalCloud_VFS_SingleInstance_v1.0", out bool isFirstInstance);
+        using var singleInstanceMutex = new Mutex(true, "Local\\myLocalCloud_VFS_SingleInstance_v1.1", out bool isFirstInstance);
         if (!isFirstInstance)
         {
             MessageBox.Show(
@@ -49,6 +47,7 @@ internal static class Program
 
         var services = new ServiceCollection();
         services.AddMyLocalCloudSecurityAndPersistence();
+        services.AddSingleton<IVirtualDriveMountService, WindowsVirtualDriveMountService>();
         services.AddSingleton<IVirtualFilePlaceholderManager, WindowsCloudFilesManager>();
         services.AddSingleton<MainControlPanelViewModel>();
 

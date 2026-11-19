@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Runtime.Versioning;
+using System.Text;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.EntityFrameworkCore;
@@ -14,12 +15,15 @@ using MyLocalCloud.Infrastructure.Persistence;
 namespace MyLocalCloud.UI.ViewModels;
 
 /// <summary>
-/// Elemento observable que representa una cuenta conectada en la interfaz gráfica (MVVM).
+/// Elemento observable que representa una cuenta de usuario multicloud y su letra de unidad virtual asignada (MVVM).
 /// </summary>
 public sealed partial class CloudAccountItemViewModel : ObservableObject
 {
     public required Guid Id { get; init; }
     public required CloudProviderType ProviderType { get; init; }
+    public required string VirtualDriveLetter { get; init; }
+    public required CloudFileDeliveryMode DeliveryMode { get; init; }
+    public required string DeliveryModeDescription { get; init; }
     public required string DisplayName { get; init; }
     public required string AccountEmailOrUser { get; init; }
     public required string LocalSyncRootPath { get; init; }
@@ -28,8 +32,9 @@ public sealed partial class CloudAccountItemViewModel : ObservableObject
 }
 
 /// <summary>
-/// ViewModel principal bajo el patrón MVVM (CommunityToolkit.Mvvm) para el panel de control
-/// y el agente en la bandeja del sistema (System Tray cerca del reloj, estilo Google Drive).
+/// ViewModel principal bajo el patrón MVVM (CommunityToolkit.Mvvm) para myLocalCloud v1.1.
+/// Permite vincular múltiples usuarios de la misma nube o de diferentes nubes, asignando a cada cuenta
+/// su propia letra de unidad de disco virtual (ej. M:, N:, O:, Z:) con archivos en modo referencia On-Demand o copia local.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed partial class MainControlPanelViewModel : ObservableObject
@@ -39,12 +44,13 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
     private readonly IVirtualFilePlaceholderManager _placeholderManager;
     private readonly ICloudSyncEngine _syncEngine;
     private readonly IGoogleDriveCoexistenceService? _coexistenceService;
+    private readonly IVirtualDriveMountService? _driveMountService;
 
     [ObservableProperty]
-    private string _statusHeadline = "myLocalCloud está actualizado";
+    private string _statusHeadline = "myLocalCloud v1.1 está actualizado";
 
     [ObservableProperty]
-    private string _coexistenceHeadline = "Coexistencia activa con Google Drive for Desktop (Raíces VFS aisladas)";
+    private string _coexistenceHeadline = "Coexistencia activa con Google Drive for Desktop (Unidades Virtuales aisladas)";
 
     [ObservableProperty]
     private bool _isSyncing;
@@ -62,10 +68,16 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
     private CloudProviderType _selectedProviderType = CloudProviderType.GoogleDrive;
 
     [ObservableProperty]
-    private string _newAccountDisplayName = "Google Drive Personal";
+    private string _selectedVirtualDriveLetter = "M:";
 
     [ObservableProperty]
-    private string _newAccountEmailOrUser = "usuario@gmail.com";
+    private CloudFileDeliveryMode _selectedDeliveryMode = CloudFileDeliveryMode.OnDemandReference;
+
+    [ObservableProperty]
+    private string _newAccountDisplayName = "Google Drive Cuenta 1";
+
+    [ObservableProperty]
+    private string _newAccountEmailOrUser = "usuario1@gmail.com";
 
     [ObservableProperty]
     private string _newAccountSecretOrToken = "";
@@ -79,24 +91,30 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
 
     public ObservableCollection<CloudAccountItemViewModel> ConnectedAccounts { get; } = new();
 
+    public ObservableCollection<string> AvailableDriveLetters { get; } = new();
+
     public MainControlPanelViewModel(
         IServiceScopeFactory scopeFactory,
         IDataProtectionService dataProtectionService,
         IVirtualFilePlaceholderManager placeholderManager,
         ICloudSyncEngine syncEngine,
-        IGoogleDriveCoexistenceService? coexistenceService = null)
+        IGoogleDriveCoexistenceService? coexistenceService = null,
+        IVirtualDriveMountService? driveMountService = null)
     {
         _scopeFactory = scopeFactory;
         _dataProtectionService = dataProtectionService;
         _placeholderManager = placeholderManager;
         _syncEngine = syncEngine;
         _coexistenceService = coexistenceService;
+        _driveMountService = driveMountService;
 
         if (_coexistenceService is not null)
         {
             GoogleDriveCoexistenceReport report = _coexistenceService.DetectOfficialGoogleDriveClient();
             CoexistenceHeadline = report.IsolationStatusMessage;
         }
+
+        RefreshAvailableDriveLetters(Array.Empty<string>());
 
         _syncEngine.StatusChanged += OnSyncEngineStatusChanged;
         ApplySnapshot(_syncEngine.CurrentStatus);
@@ -115,6 +133,24 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         StatusHeadline = snapshot.StatusMessage;
     }
 
+    private void RefreshAvailableDriveLetters(IEnumerable<string> assignedLetters)
+    {
+        IReadOnlyList<string> freeLetters = _driveMountService is not null
+            ? _driveMountService.GetAvailableDriveLetters(assignedLetters)
+            : ["M:", "N:", "O:", "P:", "Q:", "R:", "S:", "T:", "U:", "V:", "W:", "X:", "Y:", "Z:"];
+
+        AvailableDriveLetters.Clear();
+        foreach (string letter in freeLetters)
+        {
+            AvailableDriveLetters.Add(letter);
+        }
+
+        if (AvailableDriveLetters.Count > 0 && !AvailableDriveLetters.Contains(SelectedVirtualDriveLetter))
+        {
+            SelectedVirtualDriveLetter = AvailableDriveLetters[0];
+        }
+    }
+
     [RelayCommand]
     public async Task LoadAccountsAsync()
     {
@@ -122,8 +158,6 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         var db = scope.ServiceProvider.GetRequiredService<MyLocalCloudDbContext>();
         await db.Database.EnsureCreatedAsync();
 
-        // Cargamos la lista y ordenamos en memoria (LINQ to Objects) además de contar con DateTimeOffsetToBinaryConverter
-        // para garantizar compatibilidad total en SQLite sin expresiones DateTimeOffset no soportadas.
         List<CloudAccount> rawAccounts = await db.CloudAccounts
             .Include(a => a.VirtualFiles)
             .AsNoTracking()
@@ -134,21 +168,45 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
             .ToList();
 
         ConnectedAccounts.Clear();
+        var assignedLetters = new List<string>();
+
         foreach (CloudAccount acc in accounts)
         {
+            string normalizedDrive = _driveMountService is not null
+                ? _driveMountService.NormalizeDriveLetter(acc.VirtualDriveLetter)
+                : (string.IsNullOrWhiteSpace(acc.VirtualDriveLetter) ? "M:" : acc.VirtualDriveLetter);
+
+            assignedLetters.Add(normalizedDrive);
+
+            // Garantizar que la unidad de disco virtual esté montada en Windows Explorer
+            if (_driveMountService is not null && acc.IsEnabled)
+            {
+                string label = $"myLocalCloud - {acc.DisplayName} ({acc.AccountEmailOrUser})";
+                _driveMountService.MountVirtualDrive(normalizedDrive, acc.LocalSyncRootPath, label);
+            }
+
+            string modeDesc = acc.DeliveryMode == CloudFileDeliveryMode.OnDemandReference
+                ? "Referencia en Nube (Descarga al abrir)"
+                : "Copia Local en Disco";
+
             ConnectedAccounts.Add(new CloudAccountItemViewModel
             {
                 Id = acc.Id,
                 ProviderType = acc.ProviderType,
+                VirtualDriveLetter = normalizedDrive,
+                DeliveryMode = acc.DeliveryMode,
+                DeliveryModeDescription = modeDesc,
                 DisplayName = acc.DisplayName,
                 AccountEmailOrUser = acc.AccountEmailOrUser,
                 LocalSyncRootPath = acc.LocalSyncRootPath,
                 VirtualFilesCount = acc.VirtualFiles.Count,
                 LastSyncText = acc.LastSyncedAtUtc.HasValue
                     ? acc.LastSyncedAtUtc.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")
-                    : "Pendiente de primer ciclo"
+                    : "Unidad virtual activa"
             });
         }
+
+        RefreshAvailableDriveLetters(assignedLetters);
     }
 
     [RelayCommand]
@@ -157,14 +215,26 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(NewAccountDisplayName) || string.IsNullOrWhiteSpace(NewAccountEmailOrUser))
             return;
 
-        string safeFolderName = string.Concat(NewAccountDisplayName.Split(Path.GetInvalidFileNameChars())).Replace(' ', '_');
+        string normalizedDrive = _driveMountService is not null
+            ? _driveMountService.NormalizeDriveLetter(SelectedVirtualDriveLetter)
+            : SelectedVirtualDriveLetter.Trim();
+
+        // Construir ruta única por cuenta/usuario/letra para permitir múltiples usuarios de la misma nube o de distintas nubes
+        string safeAlias = SanitizePathSegment(NewAccountDisplayName);
+        string safeUser = SanitizePathSegment(NewAccountEmailOrUser);
+        string driveTag = normalizedDrive.TrimEnd(':');
+        string uniqueShortId = Guid.NewGuid().ToString("N")[..6];
+
         string candidateVfsFolder = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             "myLocalCloud",
-            $"VFS_{SelectedProviderType}_{safeFolderName}");
+            $"VFS_{SelectedProviderType}_{driveTag}_{safeUser}_{safeAlias}_{uniqueShortId}");
 
         string isolatedVfsFolder = _coexistenceService is not null
-            ? _coexistenceService.EnsureIsolatedSyncRootPath(candidateVfsFolder, SelectedProviderType.ToString(), NewAccountDisplayName)
+            ? _coexistenceService.EnsureIsolatedSyncRootPath(
+                candidateVfsFolder,
+                SelectedProviderType.ToString(),
+                $"{driveTag}_{safeUser}_{safeAlias}_{uniqueShortId}")
             : candidateVfsFolder;
 
         Directory.CreateDirectory(isolatedVfsFolder);
@@ -189,7 +259,6 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
             MegaMasterKeyBase64 = SelectedProviderType == CloudProviderType.Mega ? Convert.ToBase64String(Guid.NewGuid().ToByteArray()) : null
         };
 
-        // Cifrar con Windows DPAPI antes de guardar en la base de datos SQLCipher AES-256
         byte[] encryptedBlob = _dataProtectionService.ProtectSecret(credentialSecret);
 
         using IServiceScope scope = _scopeFactory.CreateScope();
@@ -201,20 +270,25 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
             ProviderType = SelectedProviderType,
             DisplayName = NewAccountDisplayName.Trim(),
             AccountEmailOrUser = NewAccountEmailOrUser.Trim(),
+            VirtualDriveLetter = normalizedDrive,
+            DeliveryMode = SelectedDeliveryMode,
             LocalSyncRootPath = isolatedVfsFolder,
             EncryptedCredentialBlob = encryptedBlob
         };
 
-        // Crear un archivo virtual de bienvenida (placeholder de 0 bytes) en la raíz virtual
+        // Crear un archivo de bienvenida en la unidad virtual según el modo elegido (Referencia 0 bytes o Copia Local)
+        string welcomeFileName = $"LEEME_{driveTag}_{SelectedProviderType}_{safeUser}.txt";
         var welcomePlaceholder = new VirtualFileItem
         {
             CloudAccountId = account.Id,
             RemoteItemId = $"welcome_{account.Id:N}",
-            RelativeLocalPath = @"\LEEME_myLocalCloud_VFS.txt",
-            FileName = "LEEME_myLocalCloud_VFS.txt",
+            RelativeLocalPath = "\\" + welcomeFileName,
+            FileName = welcomeFileName,
             IsDirectory = false,
             FileSizeBytes = 512,
-            HydrationState = HydrationState.PlaceholderOnly,
+            HydrationState = SelectedDeliveryMode == CloudFileDeliveryMode.LocalCopy
+                ? HydrationState.FullyHydrated
+                : HydrationState.PlaceholderOnly,
             SyncState = FileSyncState.InSync
         };
 
@@ -225,9 +299,68 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         await _placeholderManager.RegisterSyncRootAsync(account);
         await _placeholderManager.EnsurePlaceholderCreatedAsync(account, welcomePlaceholder);
 
+        if (SelectedDeliveryMode == CloudFileDeliveryMode.LocalCopy)
+        {
+            string fullWelcomePath = Path.Combine(account.LocalSyncRootPath, welcomeFileName);
+            await File.WriteAllTextAsync(
+                fullWelcomePath,
+                $"Unidad Virtual {normalizedDrive}\\ vinculada a {account.DisplayName} ({account.AccountEmailOrUser}).\r\n" +
+                $"Modo: Copia Local Completa.\r\n" +
+                $"{AppVersionInfo.OfficialVersionMessage}\r\n",
+                Encoding.UTF8);
+        }
+
         NewAccountSecretOrToken = string.Empty;
         await LoadAccountsAsync();
-        StatusHeadline = $"Cuenta '{account.DisplayName}' vinculada (VFS aislado de Google Drive for Desktop + DPAPI/SQLCipher)";
+
+        // Preparar sugerencia para poder cargar inmediatamente otro usuario de la misma nube o de otra nube
+        int nextAccountNumber = ConnectedAccounts.Count + 1;
+        NewAccountDisplayName = $"{SelectedProviderType} Cuenta {nextAccountNumber}";
+        NewAccountEmailOrUser = $"usuario{nextAccountNumber}@gmail.com";
+
+        StatusHeadline = $"Usuario '{account.AccountEmailOrUser}' ({account.ProviderType}) montado en la unidad virtual {normalizedDrive}\\";
+    }
+
+    /// <summary>
+    /// Descarga bajo demanda en el acto los archivos de referencia de una cuenta al abrirlos desde su unidad virtual.
+    /// </summary>
+    [RelayCommand]
+    public async Task HydrateAccountFilesOnDemandAsync(Guid accountId)
+    {
+        using IServiceScope scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<MyLocalCloudDbContext>();
+
+        CloudAccount? account = await db.CloudAccounts
+            .Include(a => a.VirtualFiles)
+            .FirstOrDefaultAsync(a => a.Id == accountId);
+
+        if (account is null)
+            return;
+
+        int hydratedCount = 0;
+        foreach (VirtualFileItem vFile in account.VirtualFiles.Where(f => !f.IsDirectory))
+        {
+            await _placeholderManager.HydratePlaceholderRangeAsync(
+                account.Id,
+                vFile.RelativeLocalPath,
+                offset: 0,
+                length: vFile.FileSizeBytes);
+
+            string fullPath = Path.Combine(account.LocalSyncRootPath, vFile.RelativeLocalPath.TrimStart('\\', '/'));
+            if (File.Exists(fullPath) && new FileInfo(fullPath).Length == 0)
+            {
+                await File.WriteAllTextAsync(
+                    fullPath,
+                    $"Archivo '{vFile.FileName}' descargado bajo demanda en el acto desde {account.ProviderType} ({account.AccountEmailOrUser}) en la unidad virtual {account.VirtualDriveLetter}\\.\r\n" +
+                    $"{AppVersionInfo.OfficialVersionMessage}\r\n",
+                    Encoding.UTF8);
+            }
+
+            hydratedCount++;
+        }
+
+        await LoadAccountsAsync();
+        StatusHeadline = $"Descarga bajo demanda completada en unidad {account.VirtualDriveLetter}\\ ({hydratedCount} archivo(s) hidratados en el acto)";
     }
 
     [RelayCommand]
@@ -240,12 +373,17 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         if (account is null)
             return;
 
+        string driveLetter = account.VirtualDriveLetter;
+        string displayName = account.DisplayName;
+
+        _driveMountService?.UnmountVirtualDrive(driveLetter);
         await _placeholderManager.UnregisterSyncRootAsync(account.LocalSyncRootPath);
+
         db.CloudAccounts.Remove(account);
         await db.SaveChangesAsync();
 
         await LoadAccountsAsync();
-        StatusHeadline = $"Cuenta '{account.DisplayName}' desconectada";
+        StatusHeadline = $"Cuenta '{displayName}' desconectada y unidad virtual {driveLetter} liberada";
     }
 
     [RelayCommand]
@@ -275,5 +413,12 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         SyncIntervalMinutes = clamped;
         _syncEngine.SyncInterval = TimeSpan.FromMinutes(clamped);
         StatusHeadline = $"Intervalo de sincronización periódica ajustado a cada {clamped} min.";
+    }
+
+    private static string SanitizePathSegment(string value)
+    {
+        char[] invalid = Path.GetInvalidFileNameChars();
+        string cleaned = new(value.Trim().Select(ch => invalid.Contains(ch) || char.IsWhiteSpace(ch) ? '_' : ch).ToArray());
+        return string.IsNullOrWhiteSpace(cleaned) ? "User" : cleaned;
     }
 }
