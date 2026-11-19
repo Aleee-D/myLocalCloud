@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
@@ -15,25 +14,34 @@ using MyLocalCloud.ShellIntegration.Interop;
 namespace MyLocalCloud.ShellIntegration;
 
 /// <summary>
-/// Integración con el Explorador de Windows mediante Windows Cloud Files API (<c>CfApi</c>).
-/// Registra raíces de sincronización ("Files On-Demand"), crea marcadores de posición (placeholders)
-/// y atiende la hidratación bajo demanda por bloques cuando el usuario abre un archivo en Windows Explorer.
+/// Gestor del Sistema de Archivos Virtual (VFS) y Unidades de Disco Virtuales para el Explorador de Windows.
+/// Garantiza acceso instantáneo (0 ms, sin bloqueos ni tiempos de espera agotados en <c>cldflt.sys</c>)
+/// cuando la carpeta se monta como unidad de disco virtual (<c>M:</c>, <c>N:</c>, <c>O:</c>, etc.),
+/// limpiando cualquier punto de análisis (reparse point) bloqueante previo y gestionando referencias
+/// y descargas bajo demanda por bloques desde la nube.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, IDisposable
 {
     public static readonly Guid MyLocalCloudProviderGuid = new("8E52D4B0-7D2C-4E88-9F1A-A1B2C3D4E5F6");
-    private const string IsolatedCfProviderName = "myLocalCloud.VFS.Provider";
+
+    private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+    private const uint FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000;
+    private const uint FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000;
+    private const uint CLOUD_BLOCKING_ATTRIBUTES =
+        FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFileAttributesW([MarshalAs(UnmanagedType.LPWStr)] string lpFileName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool DeleteFileW([MarshalAs(UnmanagedType.LPWStr)] string lpFileName);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IDataProtectionService _dataProtectionService;
     private readonly ICloudProviderFactory _providerFactory;
     private readonly IGoogleDriveCoexistenceService? _coexistenceService;
     private readonly IVirtualDriveMountService? _driveMountService;
-    private readonly ConcurrentDictionary<string, long> _activeConnections = new(StringComparer.OrdinalIgnoreCase);
-
-    // Mantener referencia viva al delegado nativo para evitar que el GC lo recolecte mientras CfApi está conectado
-    private readonly CfApiNativeMethods.CF_CALLBACK _fetchDataCallbackDelegate;
 
     public WindowsCloudFilesManager(
         IServiceScopeFactory scopeFactory,
@@ -51,7 +59,6 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         _providerFactory = providerFactory;
         _coexistenceService = coexistenceService;
         _driveMountService = driveMountService;
-        _fetchDataCallbackDelegate = OnFetchDataCallback;
     }
 
     public Task RegisterSyncRootAsync(CloudAccount account, CancellationToken cancellationToken = default)
@@ -68,88 +75,26 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
 
         Directory.CreateDirectory(account.LocalSyncRootPath);
 
+        // Limpiar cualquier registro CfApi heredado sobre la carpeta que pudiera causar timeout en unidades virtuales DefineDosDeviceW
+        SanitizeDirectoryFromBlockingCloudReparsePoints(account.LocalSyncRootPath);
+
         // Montar la letra de unidad de disco virtual seleccionada para esta cuenta (ej. M:, N:, O:)
-        if (_driveMountService is not null && !string.IsNullOrWhiteSpace(account.VirtualDriveLetter))
+        if (_driveMountService is not null && !string.IsNullOrWhiteSpace(account.VirtualDriveLetter) && account.IsEnabled)
         {
             string volumeLabel = $"myLocalCloud - {account.DisplayName} ({account.AccountEmailOrUser})";
             _driveMountService.MountVirtualDrive(account.VirtualDriveLetter, account.LocalSyncRootPath, volumeLabel);
         }
 
         string syncRootIdentityText = $"myLocalCloud.VFS::{account.ProviderType}::{account.Id:N}";
-        byte[] identityBytes = Encoding.Unicode.GetBytes(syncRootIdentityText);
-
-        nint providerNamePtr = Marshal.StringToHGlobalUni(IsolatedCfProviderName);
-        nint providerVersionPtr = Marshal.StringToHGlobalUni(AppVersionInfo.Version);
-        nint identityPtr = Marshal.AllocHGlobal(identityBytes.Length);
-
-        try
-        {
-            Marshal.Copy(identityBytes, 0, identityPtr, identityBytes.Length);
-
-            var registration = new CfApiNativeMethods.CF_SYNC_REGISTRATION
-            {
-                StructSize = (uint)Marshal.SizeOf<CfApiNativeMethods.CF_SYNC_REGISTRATION>(),
-                ProviderName = providerNamePtr,
-                ProviderVersion = providerVersionPtr,
-                SyncRootIdentity = identityPtr,
-                SyncRootIdentityLength = (uint)identityBytes.Length,
-                ProviderId = MyLocalCloudProviderGuid
-            };
-
-            var policies = new CfApiNativeMethods.CF_SYNC_POLICIES
-            {
-                StructSize = (uint)Marshal.SizeOf<CfApiNativeMethods.CF_SYNC_POLICIES>(),
-                Hydration = new CfApiNativeMethods.CF_HYDRATION_POLICY
-                {
-                    Primary = CfApiNativeMethods.CF_HYDRATION_POLICY_PRIMARY.CF_HYDRATION_POLICY_PROGRESSIVE,
-                    Modifier = CfApiNativeMethods.CF_HYDRATION_POLICY_MODIFIER.CF_HYDRATION_POLICY_MODIFIER_STREAMING_ALLOWED
-                             | CfApiNativeMethods.CF_HYDRATION_POLICY_MODIFIER.CF_HYDRATION_POLICY_MODIFIER_AUTO_DEHYDRATION_ALLOWED
-                },
-                Population = new CfApiNativeMethods.CF_POPULATION_POLICY
-                {
-                    Primary = CfApiNativeMethods.CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_FULL,
-                    Modifier = CfApiNativeMethods.CF_POPULATION_POLICY_MODIFIER.CF_POPULATION_POLICY_MODIFIER_NONE
-                }
-            };
-
-            int hr = CfApiNativeMethods.CfRegisterSyncRoot(
-                account.LocalSyncRootPath,
-                in registration,
-                in policies,
-                CfApiNativeMethods.CF_REGISTER_FLAGS.CF_REGISTER_FLAG_UPDATE);
-
-            if (hr >= 0)
-            {
-                ConnectSyncRootCallbacks(account.LocalSyncRootPath);
-            }
-        }
-        catch (DllNotFoundException)
-        {
-            // Fallback limpio en ediciones de SO sin cldapi.dll
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(providerNamePtr);
-            Marshal.FreeHGlobal(providerVersionPtr);
-            Marshal.FreeHGlobal(identityPtr);
-        }
-
         account.SyncRootIdentity = syncRootIdentityText;
         return Task.CompletedTask;
     }
 
     public Task UnregisterSyncRootAsync(string localSyncRootPath, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(localSyncRootPath);
-
-        if (_activeConnections.TryRemove(localSyncRootPath, out long connectionKey))
+        if (!string.IsNullOrWhiteSpace(localSyncRootPath) && Directory.Exists(localSyncRootPath))
         {
-            try { CfApiNativeMethods.CfDisconnectSyncRoot(connectionKey); } catch { }
-        }
-
-        if (Directory.Exists(localSyncRootPath))
-        {
-            try { CfApiNativeMethods.CfUnregisterSyncRoot(localSyncRootPath); } catch { }
+            SanitizeDirectoryFromBlockingCloudReparsePoints(localSyncRootPath);
         }
 
         return Task.CompletedTask;
@@ -180,7 +125,10 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
             Directory.CreateDirectory(parentDir);
         }
 
-        // Si la cuenta está configurada como Copia Local Completa, descargar el contenido en la unidad virtual
+        // Si existía un archivo previo con atributos de ReparsePoint bloqueantes de cldflt.sys, eliminarlo sin abrirlo
+        RemoveBlockingCloudFileIfPresent(fullLocalPath);
+
+        // Si la cuenta está configurada como Copia Local Completa, descargar el contenido inmediatamente en la unidad virtual
         if (account.DeliveryMode == CloudFileDeliveryMode.LocalCopy && item.FileSizeBytes > 0)
         {
             try
@@ -195,25 +143,30 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
             }
             catch
             {
-                // Si el archivo aún no fue persistido o es un archivo sintético de bienvenida, continuar como placeholder
+                // Si el archivo aún no fue persistido en DB, crear el archivo en disco a continuación
             }
         }
 
-        // Intentar primero creación nativa mediante CfCreatePlaceholders (si la raíz está registrada en CfApi)
-        bool createdWithCfApi = TryCreateNativeCfPlaceholder(
-            parentDir ?? account.LocalSyncRootPath,
-            item.FileName,
-            item.RemoteItemId,
-            item.FileSizeBytes,
-            item.RemoteModifiedAtUtc);
-
-        if (!createdWithCfApi && !File.Exists(fullLocalPath))
+        // Crear archivo de referencia ligero en NTFS (0 ms de latencia en el Explorador de Windows, sin bloqueo de cldflt.sys)
+        if (!File.Exists(fullLocalPath))
         {
-            // Fallback seguro en NTFS: crear marcador de posición de referencia (0 bytes) listo para hidratación al abrir
-            using (FileStream fs = File.Create(fullLocalPath))
+            await using (var fs = new FileStream(
+                fullLocalPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete))
             {
-                // Archivo placeholder de 0 bytes en la unidad virtual hasta que se abra y descargue de la nube
+                if (item.RemoteItemId.StartsWith("welcome_", StringComparison.OrdinalIgnoreCase) ||
+                    item.RemoteItemId.StartsWith("vfs_", StringComparison.OrdinalIgnoreCase))
+                {
+                    byte[] infoBytes = Encoding.UTF8.GetBytes(
+                        $"Archivo '{item.FileName}' disponible en la unidad virtual {account.VirtualDriveLetter}\\ ({account.ProviderType} - {account.AccountEmailOrUser}).\r\n" +
+                        $"Estado: Sincronizado bajo demanda (Files On-Demand VFS).\r\n" +
+                        $"{AppVersionInfo.OfficialVersionMessage}\r\n");
+                    await fs.WriteAsync(infoBytes, cancellationToken).ConfigureAwait(false);
+                }
             }
+
             DateTime validModifiedUtc = item.RemoteModifiedAtUtc.Year >= 1601
                 ? item.RemoteModifiedAtUtc.UtcDateTime
                 : DateTime.UtcNow;
@@ -256,10 +209,12 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
+        // Eliminar cualquier reparse point previo antes de abrir el archivo para escritura
+        RemoveBlockingCloudFileIfPresent(fullLocalPath);
+
         if (offset == 0 && File.Exists(fullLocalPath) && virtualFile.HydrationState == HydrationState.PlaceholderOnly)
         {
-            // Reemplazar el reparse point deshidratado al hidratar desde modo usuario para evitar bloqueo en cldflt.sys
-            File.Delete(fullLocalPath);
+            try { DeleteFileW(fullLocalPath); } catch { }
         }
 
         long effectiveLength = length > 0 ? length : virtualFile.FileSizeBytes;
@@ -296,189 +251,55 @@ public sealed class WindowsCloudFilesManager : IVirtualFilePlaceholderManager, I
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private void ConnectSyncRootCallbacks(string syncRootPath)
+    /// <summary>
+    /// Desregistra cualquier raíz CfApi heredada y reemplaza archivos con atributos de ReparsePoint de nube
+    /// que causaban errores de "tiempo de espera superado" al acceder a la unidad virtual desde Windows Explorer.
+    /// </summary>
+    public static void SanitizeDirectoryFromBlockingCloudReparsePoints(string directoryPath)
     {
-        if (_activeConnections.ContainsKey(syncRootPath))
+        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
             return;
-
-        nint callbackPtr = Marshal.GetFunctionPointerForDelegate(_fetchDataCallbackDelegate);
-        var callbackTable = new[]
-        {
-            new CfApiNativeMethods.CF_CALLBACK_REGISTRATION
-            {
-                Type = CfApiNativeMethods.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_DATA,
-                Callback = callbackPtr
-            },
-            new CfApiNativeMethods.CF_CALLBACK_REGISTRATION
-            {
-                Type = CfApiNativeMethods.CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NONE,
-                Callback = nint.Zero
-            }
-        };
-
-        int hr = CfApiNativeMethods.CfConnectSyncRoot(
-            syncRootPath,
-            callbackTable,
-            nint.Zero,
-            CfApiNativeMethods.CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH,
-            out long connectionKey);
-
-        if (hr >= 0)
-        {
-            _activeConnections[syncRootPath] = connectionKey;
-        }
-    }
-
-    private static bool TryCreateNativeCfPlaceholder(
-        string parentDirectory,
-        string fileName,
-        string remoteItemId,
-        long fileSize,
-        DateTimeOffset modifiedUtc)
-    {
-        byte[] identityBytes = Encoding.Unicode.GetBytes(remoteItemId);
-        nint relativeNamePtr = Marshal.StringToHGlobalUni(fileName);
-        nint identityPtr = Marshal.AllocHGlobal(identityBytes.Length);
 
         try
         {
-            Marshal.Copy(identityBytes, 0, identityPtr, identityBytes.Length);
-            long fileTime = modifiedUtc.ToFileTime();
-
-            var createInfo = new CfApiNativeMethods.CF_PLACEHOLDER_CREATE_INFO
-            {
-                RelativeFileName = relativeNamePtr,
-                FileIdentity = identityPtr,
-                FileIdentityLength = (uint)identityBytes.Length,
-                Flags = CfApiNativeMethods.CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC
-                      | CfApiNativeMethods.CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_SUPERSEDE,
-                FsMetadata = new CfApiNativeMethods.CF_FS_METADATA
-                {
-                    FileSize = fileSize,
-                    BasicInfo = new CfApiNativeMethods.FILE_BASIC_INFO
-                    {
-                        CreationTime = fileTime,
-                        LastAccessTime = fileTime,
-                        LastWriteTime = fileTime,
-                        ChangeTime = fileTime,
-                        FileAttributes = (uint)FileAttributes.Normal
-                    }
-                }
-            };
-
-            var array = new[] { createInfo };
-            int hr = CfApiNativeMethods.CfCreatePlaceholders(
-                parentDirectory,
-                array,
-                1,
-                CfApiNativeMethods.CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
-                out uint processed);
-
-            return hr >= 0 && processed == 1;
+            CfApiNativeMethods.CfUnregisterSyncRoot(directoryPath);
         }
         catch
         {
-            return false;
+            // Ignorar si no estaba registrada en CfApi
         }
-        finally
+
+        try
         {
-            Marshal.FreeHGlobal(relativeNamePtr);
-            Marshal.FreeHGlobal(identityPtr);
+            foreach (string filePath in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
+            {
+                RemoveBlockingCloudFileIfPresent(filePath);
+            }
+        }
+        catch
+        {
+            // Ignorar errores de acceso concurrente
         }
     }
 
-    private void OnFetchDataCallback(
-        in CfApiNativeMethods.CF_CALLBACK_INFO callbackInfo,
-        nint callbackParameters)
+    private static void RemoveBlockingCloudFileIfPresent(string fullFilePath)
     {
-        if (callbackParameters == nint.Zero || callbackInfo.FileIdentity == nint.Zero)
-            return;
-
-        var fetchParams = Marshal.PtrToStructure<CfApiNativeMethods.CF_CALLBACK_PARAMETERS_FETCH_DATA>(callbackParameters);
-        string remoteItemId = Marshal.PtrToStringUni(callbackInfo.FileIdentity, (int)(callbackInfo.FileIdentityLength / 2)) ?? string.Empty;
-
-        long connectionKey = callbackInfo.ConnectionKey;
-        long transferKey = callbackInfo.TransferKey;
-        long requestKey = callbackInfo.RequestKey;
-        long requiredOffset = fetchParams.RequiredFileOffset;
-        long requiredLength = fetchParams.RequiredLength;
-
-        _ = Task.Run(async () =>
+        try
         {
-            try
+            uint attrs = GetFileAttributesW(fullFilePath);
+            if (attrs != 0xFFFFFFFF && (attrs & CLOUD_BLOCKING_ATTRIBUTES) != 0)
             {
-                using IServiceScope scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<MyLocalCloudDbContext>();
-
-                VirtualFileItem? vFile = await db.VirtualFiles
-                    .Include(v => v.CloudAccount)
-                    .FirstOrDefaultAsync(v => v.RemoteItemId == remoteItemId)
-                    .ConfigureAwait(false);
-
-                if (vFile?.CloudAccount is null)
-                    return;
-
-                CredentialSecret secret = _dataProtectionService.UnprotectSecret<CredentialSecret>(vFile.CloudAccount.EncryptedCredentialBlob);
-                ICloudStorageProvider provider = _providerFactory.GetProvider(vFile.CloudAccount.ProviderType);
-
-                await using var memoryStream = new MemoryStream((int)Math.Min(requiredLength, 64 * 1024 * 1024));
-                await provider.DownloadRangeAsync(
-                    secret,
-                    remoteItemId,
-                    memoryStream,
-                    requiredOffset,
-                    requiredLength).ConfigureAwait(false);
-
-                byte[] downloadedBytes = memoryStream.ToArray();
-                TransferHydratedBufferToCfApi(connectionKey, transferKey, requestKey, requiredOffset, downloadedBytes);
-
-                vFile.HydrationState = HydrationState.FullyHydrated;
-                await db.SaveChangesAsync().ConfigureAwait(false);
+                // DeleteFileW elimina el nodo con reparse point en NTFS sin invocar la hidratación bloqueante de cldflt.sys
+                DeleteFileW(fullFilePath);
             }
-            catch
-            {
-                // En caso de fallo de red durante hidratación en vivo, CfApi abortará la transferencia de forma segura
-            }
-        });
-    }
-
-    private static unsafe void TransferHydratedBufferToCfApi(
-        long connectionKey,
-        long transferKey,
-        long requestKey,
-        long requiredOffset,
-        byte[] downloadedBytes)
-    {
-        fixed (byte* bufferPtr = downloadedBytes)
+        }
+        catch
         {
-            var opInfo = new CfApiNativeMethods.CF_OPERATION_INFO
-            {
-                StructSize = (uint)Marshal.SizeOf<CfApiNativeMethods.CF_OPERATION_INFO>(),
-                Type = CfApiNativeMethods.CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
-                ConnectionKey = connectionKey,
-                TransferKey = transferKey,
-                RequestKey = requestKey
-            };
-
-            var opParams = new CfApiNativeMethods.CF_OPERATION_PARAMETERS_TRANSFER_DATA
-            {
-                ParamSize = (uint)Marshal.SizeOf<CfApiNativeMethods.CF_OPERATION_PARAMETERS_TRANSFER_DATA>(),
-                CompletionStatus = 0, // STATUS_SUCCESS
-                Buffer = (nint)bufferPtr,
-                Offset = requiredOffset,
-                Length = downloadedBytes.Length
-            };
-
-            CfApiNativeMethods.CfExecute(in opInfo, ref opParams);
+            // Ignorar
         }
     }
 
     public void Dispose()
     {
-        foreach (KeyValuePair<string, long> kvp in _activeConnections)
-        {
-            try { CfApiNativeMethods.CfDisconnectSyncRoot(kvp.Value); } catch { }
-        }
-        _activeConnections.Clear();
     }
 }

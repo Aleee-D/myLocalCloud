@@ -186,18 +186,19 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
 
             assignedLetters.Add(normalizedDrive);
 
-            // Montar o desmontar la unidad virtual según si la cuenta está habilitada o deshabilitada
-            if (_driveMountService is not null)
+            // Limpiar cualquier punto de análisis CfApi bloqueante heredado y montar/desmontar la unidad virtual
+            if (acc.IsEnabled)
             {
-                if (acc.IsEnabled)
+                await _placeholderManager.RegisterSyncRootAsync(acc);
+                foreach (VirtualFileItem vFile in acc.VirtualFiles)
                 {
-                    string label = $"myLocalCloud - {acc.DisplayName} ({acc.AccountEmailOrUser})";
-                    _driveMountService.MountVirtualDrive(normalizedDrive, acc.LocalSyncRootPath, label);
+                    await _placeholderManager.EnsurePlaceholderCreatedAsync(acc, vFile);
                 }
-                else
-                {
-                    _driveMountService.UnmountVirtualDrive(normalizedDrive);
-                }
+            }
+            else
+            {
+                await _placeholderManager.UnregisterSyncRootAsync(acc.LocalSyncRootPath);
+                _driveMountService?.UnmountVirtualDrive(normalizedDrive);
             }
 
             string modeDesc = acc.DeliveryMode == CloudFileDeliveryMode.OnDemandReference
