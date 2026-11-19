@@ -356,10 +356,75 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
         }
 
         account.RemoteDeltaCursor = deltaPage.NewDeltaCursor;
+        changesApplied += ScanLocalVirtualDriveFiles(dbContext, account);
         account.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return changesApplied;
+    }
+
+    /// <summary>
+    /// Escanea los archivos colocados o creados por el usuario dentro de la unidad de disco virtual (ej. M:\, N:\)
+    /// para indexarlos en la base de datos cifrada SQLCipher y encolar su sincronización.
+    /// </summary>
+    private static int ScanLocalVirtualDriveFiles(MyLocalCloudDbContext dbContext, CloudAccount account)
+    {
+        if (string.IsNullOrWhiteSpace(account.LocalSyncRootPath) || !Directory.Exists(account.LocalSyncRootPath))
+            return 0;
+
+        int discovered = 0;
+        try
+        {
+            string[] allFiles = Directory.GetFiles(account.LocalSyncRootPath, "*", SearchOption.AllDirectories);
+            foreach (string fullFilePath in allFiles)
+            {
+                string relativePath = "\\" + Path.GetRelativePath(account.LocalSyncRootPath, fullFilePath).Replace('/', '\\').TrimStart('\\');
+
+                bool alreadyTracked = account.VirtualFiles.Any(
+                    v => string.Equals(v.RelativeLocalPath, relativePath, StringComparison.OrdinalIgnoreCase));
+
+                if (!alreadyTracked)
+                {
+                    var fi = new FileInfo(fullFilePath);
+                    var localItem = new VirtualFileItem
+                    {
+                        CloudAccountId = account.Id,
+                        RemoteItemId = $"local_vfs_{Guid.NewGuid():N}",
+                        RelativeLocalPath = relativePath,
+                        FileName = fi.Name,
+                        IsDirectory = false,
+                        FileSizeBytes = fi.Length,
+                        HydrationState = fi.Length > 0 ? HydrationState.FullyHydrated : HydrationState.PlaceholderOnly,
+                        SyncState = fi.Length > 0 ? FileSyncState.PendingUpload : FileSyncState.InSync,
+                        LocalModifiedAtUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero),
+                        RemoteModifiedAtUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero)
+                    };
+
+                    dbContext.VirtualFiles.Add(localItem);
+                    account.VirtualFiles.Add(localItem);
+
+                    if (fi.Length > 0)
+                    {
+                        dbContext.SyncQueue.Add(new SyncQueueItem
+                        {
+                            CloudAccountId = account.Id,
+                            VirtualFileItemId = localItem.Id,
+                            OperationType = SyncOperationType.Upload,
+                            RelativePath = relativePath,
+                            Priority = 10
+                        });
+                    }
+
+                    discovered++;
+                }
+            }
+        }
+        catch
+        {
+            // Ignorar archivos bloqueados temporalmente por otra aplicación
+        }
+
+        return discovered;
     }
 
     private async Task<int> ProcessPendingQueueCoreAsync(

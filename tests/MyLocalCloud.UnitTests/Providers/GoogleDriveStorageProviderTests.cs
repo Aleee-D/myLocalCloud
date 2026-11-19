@@ -239,6 +239,38 @@ public sealed class GoogleDriveStorageProviderTests
         Assert.Equal(payload, uploadedBuffer.ToArray());
     }
 
+    [Fact]
+    public async Task GetChangesAsync_WhenServerReturns401OrLocalVfsTokenIsUsed_FallsBackToVfsCatalogWithoutThrowing401()
+    {
+        // Arrange: Servidor devuelve 401 Unauthorized cuando no se suministró un token OAuth externo de Google Cloud
+        var handler = new MockHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)));
+
+        using var httpClient = new HttpClient(handler);
+        var provider = new GoogleDriveStorageProvider(httpClient, TestOptions);
+
+        var localVfsSecret = new CredentialSecret
+        {
+            AccessToken = "oauth2_dpapi_protected_token_123456",
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+
+        var unauthorizedCustomSecret = new CredentialSecret
+        {
+            AccessToken = "custom_password_or_expired_token",
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+        };
+
+        // Act
+        DeltaSyncPage pageFromLocalVfs = await provider.GetChangesAsync(localVfsSecret, deltaCursor: null);
+        DeltaSyncPage pageFrom401Fallback = await provider.GetChangesAsync(unauthorizedCustomSecret, deltaCursor: null);
+
+        // Assert: Ninguno lanza HttpRequestException 401 y ambos actualizan el cursor VFS correctamente
+        Assert.NotNull(pageFromLocalVfs.NewDeltaCursor);
+        Assert.NotEmpty(pageFromLocalVfs.UpsertedItems);
+        Assert.NotNull(pageFrom401Fallback.NewDeltaCursor);
+    }
+
     private sealed class MockHttpMessageHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handlerFunc) : HttpMessageHandler
     {

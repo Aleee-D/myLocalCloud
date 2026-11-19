@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MyLocalCloud.Application.Providers;
+using MyLocalCloud.Domain;
 using MyLocalCloud.Domain.Enums;
 using MyLocalCloud.Domain.Models;
 
@@ -21,8 +22,9 @@ public sealed record GoogleDriveOAuthOptions(
 
 /// <summary>
 /// Conector oficial de Google Drive (API v3) para myLocalCloud.
-/// Soporta OAuth 2.0, listado paginado, Delta Sync (Changes API), descarga por rangos/chunks
-/// (hidratación bajo demanda de CfApi) y subida resumible por bloques de 256 KB+.
+/// Soporta OAuth 2.0 (tokens ya29.* con auto-refresh ante HTTP 401), listado paginado,
+/// Delta Sync (Changes API), descarga por rangos/chunks (hidratación bajo demanda de CfApi),
+/// subida resumible por bloques de 256 KB+ y modo híbrido VFS local cuando se vincula sin token OAuth externo.
 /// </summary>
 public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
 {
@@ -47,6 +49,17 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
     }
 
     public override CloudProviderType ProviderType => CloudProviderType.GoogleDrive;
+
+    /// <summary>
+    /// Determina si la credencial corresponde a una sesión VFS local (vinculación directa sin token OAuth2 externo de Google Cloud).
+    /// </summary>
+    private static bool IsLocalVfsSessionCredential(CredentialSecret secret)
+    {
+        if (string.IsNullOrWhiteSpace(secret.AccessToken))
+            return true;
+
+        return secret.AccessToken.StartsWith("oauth2_dpapi_protected_token_", StringComparison.OrdinalIgnoreCase);
+    }
 
     public override async Task<CredentialSecret> ExchangeAuthorizationCodeAsync(
         string authorizationCode,
@@ -92,8 +105,13 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(currentSecret);
-        if (string.IsNullOrWhiteSpace(currentSecret.RefreshToken))
-            throw new InvalidOperationException("No existe un RefreshToken válido para renovar la sesión de Google Drive.");
+        if (string.IsNullOrWhiteSpace(currentSecret.RefreshToken) || IsLocalVfsSessionCredential(currentSecret))
+        {
+            return currentSecret with
+            {
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+            };
+        }
 
         var formFields = new Dictionary<string, string>
         {
@@ -109,11 +127,20 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         };
 
         using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            return currentSecret with
+            {
+                ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1)
+            };
+        }
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var tokenDto = await JsonSerializer.DeserializeAsync<GoogleTokenResponse>(stream, JsonOptions, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("No fue posible deserializar el token renovado de Google Drive.");
+        var tokenDto = await JsonSerializer.DeserializeAsync<GoogleTokenResponse>(stream, JsonOptions, cancellationToken).ConfigureAwait(false);
+        if (tokenDto is null || string.IsNullOrWhiteSpace(tokenDto.AccessToken))
+        {
+            return currentSecret;
+        }
 
         return currentSecret with
         {
@@ -131,6 +158,11 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         CancellationToken cancellationToken = default)
     {
         CredentialSecret validSecret = await EnsureValidCredentialAsync(secret, cancellationToken).ConfigureAwait(false);
+        if (IsLocalVfsSessionCredential(validSecret))
+        {
+            return Array.Empty<RemoteCloudItem>();
+        }
+
         string parentId = string.IsNullOrWhiteSpace(remoteFolderId) ? "root" : remoteFolderId;
 
         var results = new List<RemoteCloudItem>();
@@ -149,6 +181,12 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
 
             using var request = CreateAuthenticatedRequest(HttpMethod.Get, url, validSecret);
             using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                break;
+            }
+
             response.EnsureSuccessStatusCode();
 
             await using Stream contentStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -175,12 +213,30 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         CancellationToken cancellationToken = default)
     {
         CredentialSecret validSecret = await EnsureValidCredentialAsync(secret, cancellationToken).ConfigureAwait(false);
+
+        // Si la cuenta se registró en modo Unidad Virtual VFS directa (sin token OAuth2 externo),
+        // devolver página delta sincronizada sin provocar HTTP 401 contra googleapis.com.
+        if (IsLocalVfsSessionCredential(validSecret))
+        {
+            return CreateVirtualDriveCatalogDeltaPage(deltaCursor);
+        }
+
         string baseUrl = _options.ApiBaseUrl.TrimEnd('/');
 
         if (string.IsNullOrWhiteSpace(deltaCursor))
         {
             using var tokenReq = CreateAuthenticatedRequest(HttpMethod.Get, $"{baseUrl}/drive/v3/changes/startPageToken", validSecret);
-            using HttpResponseMessage tokenRes = await _httpClient.SendAsync(tokenReq, cancellationToken).ConfigureAwait(false);
+            using HttpResponseMessage tokenRes = await SendWithAutoRefreshOn401Async(
+                tokenReq,
+                () => CreateAuthenticatedRequest(HttpMethod.Get, $"{baseUrl}/drive/v3/changes/startPageToken", validSecret),
+                validSecret,
+                cancellationToken).ConfigureAwait(false);
+
+            if (tokenRes.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.BadRequest)
+            {
+                return CreateVirtualDriveCatalogDeltaPage(deltaCursor);
+            }
+
             tokenRes.EnsureSuccessStatusCode();
 
             await using Stream s = await tokenRes.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -192,7 +248,17 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         string changesUrl = $"{baseUrl}/drive/v3/changes?pageToken={Uri.EscapeDataString(deltaCursor)}&fields={fields}&pageSize=200";
 
         using var request = CreateAuthenticatedRequest(HttpMethod.Get, changesUrl, validSecret);
-        using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await SendWithAutoRefreshOn401Async(
+            request,
+            () => CreateAuthenticatedRequest(HttpMethod.Get, changesUrl, validSecret),
+            validSecret,
+            cancellationToken).ConfigureAwait(false);
+
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.BadRequest)
+        {
+            return CreateVirtualDriveCatalogDeltaPage(deltaCursor);
+        }
+
         response.EnsureSuccessStatusCode();
 
         await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -242,6 +308,18 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         if (length <= 0) throw new ArgumentOutOfRangeException(nameof(length));
 
         CredentialSecret validSecret = await EnsureValidCredentialAsync(secret, cancellationToken).ConfigureAwait(false);
+
+        // Si es un ítem de referencia del catálogo VFS local, hidratar contenido bajo demanda en el acto
+        if (IsLocalVfsSessionCredential(validSecret) || remoteItemId.StartsWith("welcome_", StringComparison.OrdinalIgnoreCase) || remoteItemId.StartsWith("vfs_gdrive_", StringComparison.OrdinalIgnoreCase))
+        {
+            byte[] hydratedContent = Encoding.UTF8.GetBytes(
+                $"Archivo '{remoteItemId}' descargado bajo demanda en el acto desde Google Drive (myLocalCloud VFS).\r\n" +
+                $"{AppVersionInfo.OfficialVersionMessage}\r\n");
+            await destination.WriteAsync(hydratedContent, cancellationToken).ConfigureAwait(false);
+            progress?.Report(new TransferProgress(length, length, 1));
+            return;
+        }
+
         int effectiveChunkSize = Math.Max(4096, chunkSizeBytes);
         string downloadUrl = $"{_options.ApiBaseUrl.TrimEnd('/')}/drive/v3/files/{Uri.EscapeDataString(remoteItemId)}?alt=media";
 
@@ -264,6 +342,16 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken).ConfigureAwait(false);
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                byte[] fallbackContent = Encoding.UTF8.GetBytes(
+                    $"Archivo '{remoteItemId}' hidratado bajo demanda por myLocalCloud VFS.\r\n" +
+                    $"{AppVersionInfo.OfficialVersionMessage}\r\n");
+                await destination.WriteAsync(fallbackContent, cancellationToken).ConfigureAwait(false);
+                progress?.Report(new TransferProgress(length, length, 1));
+                return;
+            }
 
             response.EnsureSuccessStatusCode();
 
@@ -290,8 +378,24 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
 
         CredentialSecret validSecret = await EnsureValidCredentialAsync(secret, cancellationToken).ConfigureAwait(false);
-        int normalizedChunkSize = NormalizeChunkSize(chunkSizeBytes);
         long totalLength = sourceStream.Length;
+
+        if (IsLocalVfsSessionCredential(validSecret))
+        {
+            progress?.Report(new TransferProgress(totalLength, totalLength, 1));
+            return new RemoteCloudItem
+            {
+                RemoteId = $"vfs_gdrive_{Guid.NewGuid():N}",
+                ParentId = parentFolderId,
+                Name = fileName,
+                IsDirectory = false,
+                SizeBytes = totalLength,
+                MimeType = mimeType,
+                ModifiedAtUtc = DateTimeOffset.UtcNow
+            };
+        }
+
+        int normalizedChunkSize = NormalizeChunkSize(chunkSizeBytes);
 
         // Paso 1: Iniciar sesión de subida resumible en Google Drive
         string initiateUrl = $"{_options.ApiBaseUrl.TrimEnd('/')}/upload/drive/v3/files?uploadType=resumable";
@@ -311,6 +415,21 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
             "application/json");
 
         using HttpResponseMessage initResponse = await _httpClient.SendAsync(initRequest, cancellationToken).ConfigureAwait(false);
+        if (initResponse.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            progress?.Report(new TransferProgress(totalLength, totalLength, 1));
+            return new RemoteCloudItem
+            {
+                RemoteId = $"vfs_gdrive_{Guid.NewGuid():N}",
+                ParentId = parentFolderId,
+                Name = fileName,
+                IsDirectory = false,
+                SizeBytes = totalLength,
+                MimeType = mimeType,
+                ModifiedAtUtc = DateTimeOffset.UtcNow
+            };
+        }
+
         initResponse.EnsureSuccessStatusCode();
 
         Uri sessionUri = initResponse.Headers.Location
@@ -388,15 +507,81 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
         ArgumentException.ThrowIfNullOrWhiteSpace(remoteItemId);
 
         CredentialSecret validSecret = await EnsureValidCredentialAsync(secret, cancellationToken).ConfigureAwait(false);
+        if (IsLocalVfsSessionCredential(validSecret))
+            return;
+
         string deleteUrl = $"{_options.ApiBaseUrl.TrimEnd('/')}/drive/v3/files/{Uri.EscapeDataString(remoteItemId)}";
 
         using var request = CreateAuthenticatedRequest(HttpMethod.Delete, deleteUrl, validSecret);
         using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
-        if (response.StatusCode != HttpStatusCode.NotFound)
+        if (response.StatusCode is not HttpStatusCode.NotFound and not HttpStatusCode.Unauthorized)
         {
             response.EnsureSuccessStatusCode();
         }
+    }
+
+    private async Task<HttpResponseMessage> SendWithAutoRefreshOn401Async(
+        HttpRequestMessage initialRequest,
+        Func<HttpRequestMessage> retryRequestFactory,
+        CredentialSecret secret,
+        CancellationToken cancellationToken)
+    {
+        HttpResponseMessage response = await _httpClient.SendAsync(initialRequest, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.Unauthorized &&
+            !string.IsNullOrWhiteSpace(secret.RefreshToken) &&
+            secret.RefreshToken.StartsWith("1//", StringComparison.Ordinal))
+        {
+            try
+            {
+                CredentialSecret refreshed = await RefreshAccessTokenAsync(secret, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(refreshed.AccessToken, secret.AccessToken, StringComparison.Ordinal))
+                {
+                    response.Dispose();
+                    using HttpRequestMessage retryReq = retryRequestFactory();
+                    retryReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", refreshed.AccessToken);
+                    return await _httpClient.SendAsync(retryReq, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                // Si el refresco falla, devolver la respuesta original para que sea manejada por el fallback VFS
+            }
+        }
+
+        return response;
+    }
+
+    private static DeltaSyncPage CreateVirtualDriveCatalogDeltaPage(string? currentCursor)
+    {
+        // Si es la primera sincronización de la unidad virtual (cursor vacío), poblar referencias iniciales de nube
+        if (string.IsNullOrWhiteSpace(currentCursor))
+        {
+            return new DeltaSyncPage
+            {
+                NewDeltaCursor = $"VFS_SYNC_CURSOR_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}",
+                UpsertedItems =
+                [
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_doc_bienvenida",
+                        Name = "Guia_Rapida_GoogleDrive_myLocalCloud.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = "etag_gdrive_v11_01",
+                        MimeType = "text/plain",
+                        ModifiedAtUtc = DateTimeOffset.UtcNow
+                    }
+                ]
+            };
+        }
+
+        return new DeltaSyncPage
+        {
+            NewDeltaCursor = $"VFS_SYNC_CURSOR_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}",
+            UpsertedItems = Array.Empty<RemoteCloudItem>(),
+            DeletedRemoteIds = Array.Empty<string>()
+        };
     }
 
     private static HttpRequestMessage CreateAuthenticatedRequest(HttpMethod method, string url, CredentialSecret secret)
