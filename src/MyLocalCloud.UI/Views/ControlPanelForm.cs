@@ -9,9 +9,11 @@ namespace MyLocalCloud.UI.Views;
 
 /// <summary>
 /// Ventana principal del Panel de Control de myLocalCloud v1.1.
-/// Diseñada con paleta de colores primarios Celeste y Gris y el nuevo logotipo del Árbol con copa de Nube.
-/// Permite registrar múltiples usuarios de diferentes nubes o de la misma nube, asignando a cada uno
-/// una letra de unidad de disco virtual (M:, N:, O:, etc.) con archivos en modo referencia (descarga al abrir) o copia local.
+/// Diseñada con paleta de colores primarios Celeste y Gris y el logotipo del Árbol con copa de Nube.
+/// Incluye:
+/// - Botón explícito "✓ Aceptar Cuenta y Vincular con la Nube" para registrar y dejar funcionando cada cuenta.
+/// - Casilla de verificación (CheckBox) en cada cuenta para habilitarla o deshabilitarla individualmente.
+/// - Selector de letra de unidad de disco virtual (M:, N:, O:...) y botón "📂 Examinar..." para ubicación local.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class ControlPanelForm : Form
@@ -25,7 +27,7 @@ public sealed class ControlPanelForm : Form
     private static readonly Color PrimarySkyBlueLight = Color.FromArgb(56, 189, 248); // Celeste Brillante (#38BDF8)
     private static readonly Color PrimarySkyBlueSoft = Color.FromArgb(224, 242, 254);  // Celeste Hielo Suave (#E0F2FE)
     private static readonly Color PrimarySkyBlueDeep = Color.FromArgb(2, 132, 199);   // Celeste Profundo (#0284C7)
-    private static readonly Color TextDarkGray = Color.FromArgb(30, 41, 59);          // Gris Carbón para lectura nítida
+    private static readonly Color TextDarkGray = Color.FromArgb(30, 41, 59);          // Gris Carbón
 
     private readonly MainControlPanelViewModel _viewModel;
     private readonly Action<string> _showTrayNotification;
@@ -38,8 +40,11 @@ public sealed class ControlPanelForm : Form
     private readonly TextBox _txtDisplayName;
     private readonly TextBox _txtEmailOrUser;
     private readonly TextBox _txtSecretToken;
+    private readonly TextBox _txtBaseVfsPath;
     private readonly NumericUpDown _numSyncMinutes;
     private readonly Button _btnPauseResume;
+
+    private bool _isUpdatingListViewProgrammatically;
 
     public bool AllowFullExit { get; set; }
 
@@ -51,8 +56,8 @@ public sealed class ControlPanelForm : Form
         _showTrayNotification = showTrayNotification;
 
         Text = $"{AppVersionInfo.AppName} v{AppVersionInfo.Version} — Unidades Virtuales Multicloud (Paleta Celeste y Gris)";
-        Size = new Size(1060, 700);
-        MinimumSize = new Size(980, 640);
+        Size = new Size(1060, 740);
+        MinimumSize = new Size(960, 680);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = PrimaryGrayLight;
         ForeColor = TextDarkGray;
@@ -63,49 +68,49 @@ public sealed class ControlPanelForm : Form
         var headerPanel = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 98,
+            Width = 1040,
+            Height = 96,
             BackColor = PrimaryGrayDark,
             Padding = new Padding(18, 12, 18, 10)
         };
 
         var logoPictureBox = new PictureBox
         {
-            Image = CloudIconGenerator.CreateCloudTreeLogoBitmap(68),
+            Image = CloudIconGenerator.CreateCloudTreeLogoBitmap(66),
             SizeMode = PictureBoxSizeMode.Zoom,
             Location = new Point(18, 14),
-            Size = new Size(68, 68),
+            Size = new Size(66, 66),
             BackColor = Color.Transparent
         };
 
         var lblTitle = new Label
         {
             Text = "myLocalCloud v1.1 — Unidades de Disco Virtuales Multicloud",
-            Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold),
+            Font = new Font("Segoe UI Semibold", 14.5f, FontStyle.Bold),
             ForeColor = PrimarySkyBlueSoft,
             AutoSize = true,
-            Location = new Point(98, 12)
+            Location = new Point(96, 10)
         };
 
         _lblStatus = new Label
         {
             Text = _viewModel.StatusHeadline,
-            Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
             ForeColor = PrimarySkyBlueLight,
             AutoSize = true,
-            Location = new Point(100, 42)
+            Location = new Point(98, 40)
         };
 
         var lblCoexistence = new Label
         {
-            Text = $"✓ {_viewModel.CoexistenceHeadline} | Multi-usuario misma nube o distintas nubes",
-            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            Text = $"✓ {_viewModel.CoexistenceHeadline}",
+            Font = new Font("Segoe UI", 8.8f, FontStyle.Regular),
             ForeColor = Color.FromArgb(226, 232, 240),
             AutoSize = true,
-            Location = new Point(100, 66)
+            Location = new Point(98, 64)
         };
 
-        var btnAbout = CreateActionButton("🌳☁ Acerca de v1.1", PrimarySkyBlue, Color.White, new Point(875, 28), new Size(150, 38));
-        btnAbout.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        var btnAbout = CreateActionButton("🌳☁ Acerca de v1.1", PrimarySkyBlue, Color.White, new Point(780, 26), new Size(160, 38));
         btnAbout.Click += (_, _) => ShowOfficialVersionDialog(this);
 
         headerPanel.Controls.Add(logoPictureBox);
@@ -118,15 +123,16 @@ public sealed class ControlPanelForm : Form
         var syncBarPanel = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 58,
+            Width = 1040,
+            Height = 56,
             BackColor = PrimarySkyBlueSoft,
             Padding = new Padding(20, 10, 20, 10)
         };
 
-        var btnSyncNow = CreateActionButton("⟳ Sincronizar ahora", PrimarySkyBlueDeep, Color.White, new Point(20, 11), new Size(170, 36));
+        var btnSyncNow = CreateActionButton("⟳ Sincronizar ahora", PrimarySkyBlueDeep, Color.White, new Point(20, 10), new Size(165, 36));
         btnSyncNow.Click += async (_, _) => await TriggerSyncNowAsync();
 
-        _btnPauseResume = CreateActionButton("⏸ Pausar sincronización", PrimaryGrayMedium, Color.White, new Point(200, 11), new Size(195, 36));
+        _btnPauseResume = CreateActionButton("⏸ Pausar sincronización", PrimaryGrayMedium, Color.White, new Point(195, 10), new Size(190, 36));
         _btnPauseResume.Click += (_, _) =>
         {
             _viewModel.TogglePauseResumeSyncCommand.Execute(null);
@@ -135,11 +141,11 @@ public sealed class ControlPanelForm : Form
 
         var lblInterval = new Label
         {
-            Text = "Sincronización periódica cada (min):",
+            Text = "Sincronizar cada (min):",
             ForeColor = TextDarkGray,
             Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
             AutoSize = true,
-            Location = new Point(415, 19)
+            Location = new Point(400, 18)
         };
 
         _numSyncMinutes = new NumericUpDown
@@ -147,8 +153,8 @@ public sealed class ControlPanelForm : Form
             Minimum = 1,
             Maximum = 120,
             Value = _viewModel.SyncIntervalMinutes,
-            Location = new Point(650, 15),
-            Width = 65,
+            Location = new Point(560, 14),
+            Width = 62,
             BackColor = Color.White,
             ForeColor = TextDarkGray
         };
@@ -158,9 +164,8 @@ public sealed class ControlPanelForm : Form
             RefreshUiFromViewModel();
         };
 
-        var btnOpenVfsFolder = CreateActionButton("📂 Abrir raíz myLocalCloud", PrimarySkyBlue, Color.White, new Point(845, 11), new Size(180, 36));
-        btnOpenVfsFolder.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnOpenVfsFolder.Click += (_, _) => OpenVfsRootInExplorer();
+        var btnOpenVfsFolder = CreateActionButton("📂 Abrir carpeta raíz VFS", PrimarySkyBlue, Color.White, new Point(645, 10), new Size(195, 36));
+        btnOpenVfsFolder.Click += (_, _) => OpenVfsRootInExplorer(_txtBaseVfsPath?.Text);
 
         syncBarPanel.Controls.Add(btnSyncNow);
         syncBarPanel.Controls.Add(_btnPauseResume);
@@ -168,30 +173,31 @@ public sealed class ControlPanelForm : Form
         syncBarPanel.Controls.Add(_numSyncMinutes);
         syncBarPanel.Controls.Add(btnOpenVfsFolder);
 
-        // --- 3. Panel de Registro Multi-Usuario y Selección de Letra de Unidad Virtual ---
+        // --- 3. Panel de Registro Multi-Usuario, Unidad Virtual y Botón Aceptar/Vincular ---
         var addAccountGroup = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 148,
+            Width = 1040,
+            Height = 192,
             BackColor = PrimaryGrayCard,
             Padding = new Padding(20, 10, 20, 10)
         };
 
         var lblAddHeader = new Label
         {
-            Text = "Registrar Usuario de Nube y Montar Letra de Unidad Virtual (Permite múltiples cuentas de la misma nube o de distintas nubes):",
+            Text = "1) Selecciona la Nube, la Letra de Unidad Virtual y los datos del usuario; luego pulsa '✓ Aceptar Cuenta y Vincular con la Nube':",
             Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
             ForeColor = PrimarySkyBlueDeep,
             AutoSize = true,
-            Location = new Point(20, 10)
+            Location = new Point(20, 8)
         };
 
-        // Fila 1 de controles de alta
-        var lblProv = new Label { Text = "Nube:", Location = new Point(20, 38), AutoSize = true, ForeColor = PrimaryGrayDark };
+        // Fila 1: Nube, Unidad Virtual, Modo de Archivos, Alias y Correo/Usuario
+        var lblProv = new Label { Text = "Nube:", Location = new Point(20, 34), AutoSize = true, ForeColor = PrimaryGrayDark };
         _cmbProvider = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Location = new Point(20, 60),
+            Location = new Point(20, 55),
             Width = 125,
             BackColor = Color.White,
             ForeColor = TextDarkGray
@@ -209,12 +215,12 @@ public sealed class ControlPanelForm : Form
             }
         };
 
-        var lblDrive = new Label { Text = "Unidad Virtual:", Location = new Point(158, 38), AutoSize = true, ForeColor = PrimaryGrayDark };
+        var lblDrive = new Label { Text = "Unidad Virtual:", Location = new Point(155, 34), AutoSize = true, ForeColor = PrimaryGrayDark };
         _cmbDriveLetter = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Location = new Point(158, 60),
-            Width = 90,
+            Location = new Point(155, 55),
+            Width = 88,
             BackColor = PrimarySkyBlueSoft,
             ForeColor = PrimarySkyBlueDeep,
             Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold)
@@ -234,12 +240,12 @@ public sealed class ControlPanelForm : Form
             }
         };
 
-        var lblMode = new Label { Text = "Modo de Archivos en la Unidad:", Location = new Point(262, 38), AutoSize = true, ForeColor = PrimaryGrayDark };
+        var lblMode = new Label { Text = "Modo en Unidad Virtual:", Location = new Point(255, 34), AutoSize = true, ForeColor = PrimaryGrayDark };
         _cmbDeliveryMode = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Location = new Point(262, 60),
-            Width = 250,
+            Location = new Point(255, 55),
+            Width = 240,
             BackColor = Color.White,
             ForeColor = TextDarkGray
         };
@@ -253,63 +259,109 @@ public sealed class ControlPanelForm : Form
                 : CloudFileDeliveryMode.OnDemandReference;
         };
 
-        var lblName = new Label { Text = "Alias de la Cuenta:", Location = new Point(526, 38), AutoSize = true, ForeColor = PrimaryGrayDark };
+        var lblName = new Label { Text = "Alias de la Cuenta:", Location = new Point(508, 34), AutoSize = true, ForeColor = PrimaryGrayDark };
         _txtDisplayName = new TextBox
         {
             Text = _viewModel.NewAccountDisplayName,
-            Location = new Point(526, 60),
-            Width = 160,
-            BackColor = Color.White,
-            ForeColor = TextDarkGray,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-
-        var lblUser = new Label { Text = "Usuario / Correo:", Location = new Point(698, 38), AutoSize = true, ForeColor = PrimaryGrayDark };
-        _txtEmailOrUser = new TextBox
-        {
-            Text = _viewModel.NewAccountEmailOrUser,
-            Location = new Point(698, 60),
+            Location = new Point(508, 55),
             Width = 175,
             BackColor = Color.White,
             ForeColor = TextDarkGray,
             BorderStyle = BorderStyle.FixedSingle
         };
 
-        // Fila 2 de controles de alta (Token DPAPI + Botón Vincular)
+        var lblUser = new Label { Text = "Usuario / Correo de la Nube:", Location = new Point(695, 34), AutoSize = true, ForeColor = PrimaryGrayDark };
+        _txtEmailOrUser = new TextBox
+        {
+            Text = _viewModel.NewAccountEmailOrUser,
+            Location = new Point(695, 55),
+            Width = 225,
+            BackColor = Color.White,
+            ForeColor = TextDarkGray,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        // Fila 2: Token/Clave + Ubicación de Carpeta Local VFS con Botón "Examinar..."
         var lblToken = new Label
         {
-            Text = "Token OAuth2 / Contraseña FTP / Clave MEGA (Se cifra con Windows DPAPI):",
-            Location = new Point(20, 102),
+            Text = "Token OAuth2 / Clave (cifrado DPAPI):",
+            Location = new Point(20, 92),
             AutoSize = true,
             ForeColor = PrimaryGrayDark
         };
 
         _txtSecretToken = new TextBox
         {
-            Location = new Point(465, 99),
-            Width = 240,
+            Location = new Point(20, 112),
+            Width = 223,
             UseSystemPasswordChar = true,
+            PlaceholderText = "Token o contraseña (opcional)",
             BackColor = Color.White,
             ForeColor = TextDarkGray,
             BorderStyle = BorderStyle.FixedSingle
         };
 
-        var btnConnect = CreateActionButton("➕ Vincular Usuario y Montar Unidad", PrimarySkyBlue, Color.White, new Point(725, 95), new Size(300, 36));
-        btnConnect.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        btnConnect.Click += async (_, _) =>
+        var lblBaseVfs = new Label
         {
-            _viewModel.NewAccountDisplayName = _txtDisplayName.Text;
-            _viewModel.NewAccountEmailOrUser = _txtEmailOrUser.Text;
-            _viewModel.NewAccountSecretOrToken = _txtSecretToken.Text;
-            if (_cmbDriveLetter.SelectedItem is string letter)
+            Text = "Ubicación de carpeta local VFS para las unidades virtuales:",
+            Location = new Point(255, 92),
+            AutoSize = true,
+            ForeColor = PrimaryGrayDark
+        };
+
+        _txtBaseVfsPath = new TextBox
+        {
+            Text = _viewModel.CustomBaseVfsDirectory,
+            Location = new Point(255, 112),
+            Width = 428,
+            BackColor = Color.White,
+            ForeColor = TextDarkGray,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        var btnBrowseVfs = CreateActionButton("📂 Examinar...", PrimaryGrayMedium, Color.White, new Point(695, 110), new Size(130, 29));
+        btnBrowseVfs.Click += (_, _) =>
+        {
+            using var folderDialog = new FolderBrowserDialog
             {
-                _viewModel.SelectedVirtualDriveLetter = letter;
+                Description = "Selecciona la carpeta donde se alojarán los contenedores VFS de las unidades virtuales:",
+                SelectedPath = Directory.Exists(_txtBaseVfsPath.Text)
+                    ? _txtBaseVfsPath.Text
+                    : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ShowNewFolderButton = true
+            };
+
+            if (folderDialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(folderDialog.SelectedPath))
+            {
+                _txtBaseVfsPath.Text = folderDialog.SelectedPath;
+                _viewModel.CustomBaseVfsDirectory = folderDialog.SelectedPath;
             }
-            await _viewModel.ConnectAccountCommand.ExecuteAsync(null);
+        };
+
+        // Fila 3: Botón Principal "✓ Aceptar Cuenta y Vincular con la Nube" + Botón "Preparar Otra Cuenta"
+        var btnAcceptAndLink = CreateActionButton(
+            "✓ Aceptar Cuenta y Vincular con la Nube",
+            PrimarySkyBlueDeep,
+            Color.White,
+            new Point(20, 146),
+            new Size(345, 38));
+        btnAcceptAndLink.Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold);
+        btnAcceptAndLink.Click += async (_, _) => await AcceptAndLinkCurrentAccountAsync();
+
+        var btnPrepareNextAccount = CreateActionButton(
+            "➕ Limpiar Campos para Cargar Otra Cuenta",
+            PrimaryGrayMedium,
+            Color.White,
+            new Point(380, 146),
+            new Size(295, 38));
+        btnPrepareNextAccount.Click += (_, _) =>
+        {
+            int nextIdx = _viewModel.ConnectedAccounts.Count + 1;
+            _txtDisplayName.Text = $"{_viewModel.SelectedProviderType} Cuenta {nextIdx}";
+            _txtEmailOrUser.Text = $"usuario{nextIdx}@gmail.com";
             _txtSecretToken.Clear();
-            _txtDisplayName.Text = _viewModel.NewAccountDisplayName;
-            _txtEmailOrUser.Text = _viewModel.NewAccountEmailOrUser;
-            RefreshUiFromViewModel();
+            _txtEmailOrUser.Focus();
+            _lblStatus.Text = "Campos listos para ingresar otra cuenta (de la misma nube o de otra nube).";
         };
 
         addAccountGroup.Controls.AddRange([
@@ -320,44 +372,70 @@ public sealed class ControlPanelForm : Form
             lblName, _txtDisplayName,
             lblUser, _txtEmailOrUser,
             lblToken, _txtSecretToken,
-            btnConnect
+            lblBaseVfs, _txtBaseVfsPath, btnBrowseVfs,
+            btnAcceptAndLink,
+            btnPrepareNextAccount
         ]);
 
-        // --- 4. Lista de Usuarios Multicloud y Unidades Virtuales ---
+        // --- 4. Lista de Cuentas con Casilla (CheckBox) para Habilitar / Deshabilitar Individualmente ---
         var listContainer = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(20, 10, 20, 10),
+            Padding = new Padding(20, 8, 20, 10),
             BackColor = PrimaryGrayLight
+        };
+
+        var lblListInstructions = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 24,
+            Text = "2) Cuentas Registradas — Marca o desmarca la casilla [✓] de cada cuenta para habilitarla o deshabilitarla individualmente:",
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
+            ForeColor = PrimaryGrayDark
         };
 
         _accountsListView = new ListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
+            CheckBoxes = true, // Marca individual en cada cuenta para habilitarla o deshabilitarla
             FullRowSelect = true,
             GridLines = true,
             BackColor = Color.White,
             ForeColor = TextDarkGray,
             BorderStyle = BorderStyle.FixedSingle
         };
+        _accountsListView.Columns.Add("☑ Habilitada", 105);
         _accountsListView.Columns.Add("Unidad Virtual", 105);
-        _accountsListView.Columns.Add("Nube", 110);
+        _accountsListView.Columns.Add("Nube", 105);
         _accountsListView.Columns.Add("Usuario / Correo", 180);
-        _accountsListView.Columns.Add("Alias de Cuenta", 155);
-        _accountsListView.Columns.Add("Modo de Archivos", 215);
-        _accountsListView.Columns.Add("Archivos", 75);
-        _accountsListView.Columns.Add("Estado / Sincronización", 165);
+        _accountsListView.Columns.Add("Alias de Cuenta", 150);
+        _accountsListView.Columns.Add("Modo de Archivos", 205);
+        _accountsListView.Columns.Add("Archivos", 70);
+        _accountsListView.Columns.Add("Estado / Sincronización", 180);
 
-        // Al hacer doble clic sobre una cuenta, abrir su unidad virtual (y descargar bajo demanda si es referencia)
+        _accountsListView.ItemChecked += async (_, e) =>
+        {
+            if (_isUpdatingListViewProgrammatically)
+                return;
+
+            if (e.Item.Tag is Guid accountId)
+            {
+                await _viewModel.SetAccountEnabledStateAsync(accountId, e.Item.Checked);
+                RefreshUiFromViewModel();
+            }
+        };
+
         _accountsListView.DoubleClick += async (_, _) => await OpenSelectedVirtualDriveAndHydrateOnDemandAsync();
 
         listContainer.Controls.Add(_accountsListView);
+        listContainer.Controls.Add(lblListInstructions);
 
-        // --- 5. Pie de Página (Gris Pizarra + Botones Celestes de Unidad Virtual + Autoría v1.1) ---
+        // --- 5. Pie de Página (Gris Pizarra + Acciones de Unidad Virtual + Autoría v1.1) ---
         var footerPanel = new Panel
         {
             Dock = DockStyle.Bottom,
+            Width = 1040,
             Height = 60,
             BackColor = PrimaryGrayDark,
             Padding = new Padding(20, 8, 20, 8)
@@ -365,19 +443,44 @@ public sealed class ControlPanelForm : Form
 
         var lblVersionFooter = new Label
         {
-            Text = "Versión 1.1 — Fue desarrollada por android.ar | Desarrollador: Alejandro Ferrer",
-            Font = new Font("Segoe UI Semibold", 10f, FontStyle.Bold),
+            Text = "Versión 1.1 — Desarrollada por android.ar | Alejandro Ferrer",
+            Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
             ForeColor = PrimarySkyBlueLight,
             AutoSize = true,
-            Location = new Point(20, 19)
+            Location = new Point(20, 20)
         };
 
-        var btnOpenDrive = CreateActionButton("💿 Abrir Unidad Virtual (Descargar al abrir)", PrimarySkyBlue, Color.White, new Point(485, 12), new Size(300, 36));
-        btnOpenDrive.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        var btnToggleEnable = CreateActionButton(
+            "☑ Habilitar / Deshabilitar",
+            PrimarySkyBlueDeep,
+            Color.White,
+            new Point(415, 12),
+            new Size(185, 36));
+        btnToggleEnable.Click += async (_, _) =>
+        {
+            if (_accountsListView.SelectedItems.Count > 0 &&
+                _accountsListView.SelectedItems[0].Tag is Guid id)
+            {
+                bool current = _accountsListView.SelectedItems[0].Checked;
+                await _viewModel.SetAccountEnabledStateAsync(id, !current);
+                RefreshUiFromViewModel();
+            }
+        };
+
+        var btnOpenDrive = CreateActionButton(
+            "💿 Abrir Unidad Virtual",
+            PrimarySkyBlue,
+            Color.White,
+            new Point(610, 12),
+            new Size(190, 36));
         btnOpenDrive.Click += async (_, _) => await OpenSelectedVirtualDriveAndHydrateOnDemandAsync();
 
-        var btnRemoveSelected = CreateActionButton("Desconectar y Liberar Unidad", PrimaryGrayMedium, Color.White, new Point(795, 12), new Size(230, 36));
-        btnRemoveSelected.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        var btnRemoveSelected = CreateActionButton(
+            "🗑 Eliminar Cuenta",
+            PrimaryGrayMedium,
+            Color.White,
+            new Point(810, 12),
+            new Size(155, 36));
         btnRemoveSelected.Click += async (_, _) =>
         {
             if (_accountsListView.SelectedItems.Count > 0 &&
@@ -389,6 +492,7 @@ public sealed class ControlPanelForm : Form
         };
 
         footerPanel.Controls.Add(lblVersionFooter);
+        footerPanel.Controls.Add(btnToggleEnable);
         footerPanel.Controls.Add(btnOpenDrive);
         footerPanel.Controls.Add(btnRemoveSelected);
 
@@ -420,11 +524,55 @@ public sealed class ControlPanelForm : Form
         };
     }
 
+    private async Task AcceptAndLinkCurrentAccountAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_txtDisplayName.Text) || string.IsNullOrWhiteSpace(_txtEmailOrUser.Text))
+        {
+            MessageBox.Show(
+                this,
+                "Por favor ingresa el Alias de la cuenta y el Usuario o Correo electrónico antes de aceptar la vinculación.",
+                "Datos de cuenta incompletos",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        string chosenDrive = _cmbDriveLetter.SelectedItem as string ?? _viewModel.SelectedVirtualDriveLetter;
+        string chosenProvider = _cmbProvider.SelectedItem as string ?? _viewModel.SelectedProviderType.ToString();
+        string enteredAlias = _txtDisplayName.Text.Trim();
+        string enteredUser = _txtEmailOrUser.Text.Trim();
+
+        _viewModel.NewAccountDisplayName = enteredAlias;
+        _viewModel.NewAccountEmailOrUser = enteredUser;
+        _viewModel.NewAccountSecretOrToken = _txtSecretToken.Text;
+        _viewModel.SelectedVirtualDriveLetter = chosenDrive;
+        _viewModel.CustomBaseVfsDirectory = _txtBaseVfsPath.Text.Trim();
+
+        await _viewModel.ConnectAccountCommand.ExecuteAsync(null);
+
+        _txtSecretToken.Clear();
+        _txtDisplayName.Text = _viewModel.NewAccountDisplayName;
+        _txtEmailOrUser.Text = _viewModel.NewAccountEmailOrUser;
+        RefreshUiFromViewModel();
+
+        MessageBox.Show(
+            this,
+            $"¡Cuenta aceptada, vinculada y funcionando!\n\n" +
+            $"• Nube: {chosenProvider}\n" +
+            $"• Usuario: {enteredUser} ({enteredAlias})\n" +
+            $"• Unidad Virtual Montada: {chosenDrive}\\\n" +
+            $"• Estado: [✓] Habilitada y sincronizando\n\n" +
+            $"Ahora puedes seleccionar otra letra de unidad y cargar otra cuenta (de la misma nube o de otra nube).",
+            "Cuenta Vinculada Exitosamente — myLocalCloud v1.1",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
     private async Task OpenSelectedVirtualDriveAndHydrateOnDemandAsync()
     {
         if (_accountsListView.SelectedItems.Count == 0)
         {
-            OpenVfsRootInExplorer();
+            OpenVfsRootInExplorer(_txtBaseVfsPath.Text);
             return;
         }
 
@@ -435,7 +583,18 @@ public sealed class ControlPanelForm : Form
         if (item is null)
             return;
 
-        // Si está en modo Referencia en Nube, al abrir desde aquí se hidratan los archivos solicitados en el acto
+        if (!item.IsEnabled)
+        {
+            MessageBox.Show(
+                this,
+                $"La cuenta '{item.DisplayName}' está actualmente deshabilitada.\n" +
+                $"Marca su casilla [✓] en la lista para habilitarla y montar su unidad virtual {item.VirtualDriveLetter}\\.",
+                "Cuenta Deshabilitada",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
         await _viewModel.HydrateAccountFilesOnDemandCommand.ExecuteAsync(accountId);
 
         string driveRoot = $"{item.VirtualDriveLetter}\\";
@@ -469,7 +628,6 @@ public sealed class ControlPanelForm : Form
             ? "▶ Reanudar sincronización"
             : "⏸ Pausar sincronización";
 
-        // Actualizar selector de letras de unidad virtual disponibles
         _cmbDriveLetter.BeginUpdate();
         _cmbDriveLetter.Items.Clear();
         foreach (string letter in _viewModel.AvailableDriveLetters)
@@ -483,26 +641,35 @@ public sealed class ControlPanelForm : Form
         }
         _cmbDriveLetter.EndUpdate();
 
-        // Actualizar tabla de usuarios y unidades virtuales
-        _accountsListView.BeginUpdate();
-        _accountsListView.Items.Clear();
-        foreach (CloudAccountItemViewModel item in _viewModel.ConnectedAccounts)
+        _isUpdatingListViewProgrammatically = true;
+        try
         {
-            var lvi = new ListViewItem($"{item.VirtualDriveLetter}\\")
+            _accountsListView.BeginUpdate();
+            _accountsListView.Items.Clear();
+            foreach (CloudAccountItemViewModel item in _viewModel.ConnectedAccounts)
             {
-                Tag = item.Id,
-                Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold),
-                ForeColor = PrimarySkyBlueDeep
-            };
-            lvi.SubItems.Add(item.ProviderType.ToString());
-            lvi.SubItems.Add(item.AccountEmailOrUser);
-            lvi.SubItems.Add(item.DisplayName);
-            lvi.SubItems.Add(item.DeliveryModeDescription);
-            lvi.SubItems.Add(item.VirtualFilesCount.ToString());
-            lvi.SubItems.Add(item.LastSyncText);
-            _accountsListView.Items.Add(lvi);
+                var lvi = new ListViewItem(item.EnabledStatusText)
+                {
+                    Tag = item.Id,
+                    Checked = item.IsEnabled,
+                    Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+                    ForeColor = item.IsEnabled ? PrimarySkyBlueDeep : PrimaryGrayMedium
+                };
+                lvi.SubItems.Add($"{item.VirtualDriveLetter}\\");
+                lvi.SubItems.Add(item.ProviderType.ToString());
+                lvi.SubItems.Add(item.AccountEmailOrUser);
+                lvi.SubItems.Add(item.DisplayName);
+                lvi.SubItems.Add(item.DeliveryModeDescription);
+                lvi.SubItems.Add(item.VirtualFilesCount.ToString());
+                lvi.SubItems.Add(item.LastSyncText);
+                _accountsListView.Items.Add(lvi);
+            }
+            _accountsListView.EndUpdate();
         }
-        _accountsListView.EndUpdate();
+        finally
+        {
+            _isUpdatingListViewProgrammatically = false;
+        }
     }
 
     public static void ShowOfficialVersionDialog(IWin32Window? owner = null)
@@ -512,22 +679,22 @@ public sealed class ControlPanelForm : Form
             "myLocalCloud — Versión 1.1\n" +
             "Desarrollada por: android.ar\n" +
             "Desarrollador: Alejandro Ferrer\n\n" +
-            "Novedades de la Versión 1.1:\n" +
-            "• Unidades de disco virtuales dedicadas (M:, N:, O:, Z:) por cada usuario registrado.\n" +
-            "• Registro de múltiples usuarios de la misma nube o de diferentes nubes para sumar y aprovechar sus espacios gratuitos/contratados.\n" +
-            "• Archivos como referencia en la nube (se descargan en el mismo momento de abrirlos) o copia local.\n" +
-            "• Paleta visual Celeste y Gris y nuevo logotipo (Árbol cuya copa es una Nube).\n" +
-            "• Seguridad Windows DPAPI + SQLCipher AES-256 y coexistencia con Google Drive for Desktop.",
+            "Características de la Versión 1.1:\n" +
+            "• Botón de aceptación y vinculación inmediata con montaje automático de unidad de disco virtual (M:, N:, O:, Z:).\n" +
+            "• Casilla de verificación [✓] individual en cada cuenta para habilitarla o deshabilitarla en cualquier momento.\n" +
+            "• Registro de múltiples usuarios de la misma nube o de diferentes nubes para aprovechar el espacio de cada cuenta.\n" +
+            "• Archivos como referencia en la nube (se descargan en el acto al abrirlos) o copia local.\n" +
+            "• Paleta visual Celeste y Gris y nuevo logotipo (Árbol cuya copa es una Nube).",
             "Acerca de myLocalCloud v1.1",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
     }
 
-    public static void OpenVfsRootInExplorer()
+    public static void OpenVfsRootInExplorer(string? customFolder = null)
     {
-        string rootFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "myLocalCloud");
+        string rootFolder = !string.IsNullOrWhiteSpace(customFolder)
+            ? customFolder
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "myLocalCloud");
 
         Directory.CreateDirectory(rootFolder);
         Process.Start(new ProcessStartInfo

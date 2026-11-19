@@ -15,11 +15,14 @@ using MyLocalCloud.Infrastructure.Persistence;
 namespace MyLocalCloud.UI.ViewModels;
 
 /// <summary>
-/// Elemento observable que representa una cuenta de usuario multicloud y su letra de unidad virtual asignada (MVVM).
+/// Elemento observable que representa una cuenta de usuario multicloud, su estado de habilitación
+/// individual y su letra de unidad virtual asignada (MVVM).
 /// </summary>
 public sealed partial class CloudAccountItemViewModel : ObservableObject
 {
     public required Guid Id { get; init; }
+    public required bool IsEnabled { get; init; }
+    public required string EnabledStatusText { get; init; }
     public required CloudProviderType ProviderType { get; init; }
     public required string VirtualDriveLetter { get; init; }
     public required CloudFileDeliveryMode DeliveryMode { get; init; }
@@ -33,8 +36,8 @@ public sealed partial class CloudAccountItemViewModel : ObservableObject
 
 /// <summary>
 /// ViewModel principal bajo el patrón MVVM (CommunityToolkit.Mvvm) para myLocalCloud v1.1.
-/// Permite vincular múltiples usuarios de la misma nube o de diferentes nubes, asignando a cada cuenta
-/// su propia letra de unidad de disco virtual (ej. M:, N:, O:, Z:) con archivos en modo referencia On-Demand o copia local.
+/// Permite vincular múltiples usuarios de la misma nube o de diferentes nubes, habilitarlos o deshabilitarlos
+/// individualmente con una casilla de verificación, y montar para cada cuenta activa su propia letra de unidad virtual.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed partial class MainControlPanelViewModel : ObservableObject
@@ -84,6 +87,11 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
 
     [ObservableProperty]
     private string _newAccountFtpHost = "";
+
+    [ObservableProperty]
+    private string _customBaseVfsDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        "myLocalCloud");
 
     public string VersionBannerText => AppVersionInfo.OfficialVersionMessage;
 
@@ -178,20 +186,35 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
 
             assignedLetters.Add(normalizedDrive);
 
-            // Garantizar que la unidad de disco virtual esté montada en Windows Explorer
-            if (_driveMountService is not null && acc.IsEnabled)
+            // Montar o desmontar la unidad virtual según si la cuenta está habilitada o deshabilitada
+            if (_driveMountService is not null)
             {
-                string label = $"myLocalCloud - {acc.DisplayName} ({acc.AccountEmailOrUser})";
-                _driveMountService.MountVirtualDrive(normalizedDrive, acc.LocalSyncRootPath, label);
+                if (acc.IsEnabled)
+                {
+                    string label = $"myLocalCloud - {acc.DisplayName} ({acc.AccountEmailOrUser})";
+                    _driveMountService.MountVirtualDrive(normalizedDrive, acc.LocalSyncRootPath, label);
+                }
+                else
+                {
+                    _driveMountService.UnmountVirtualDrive(normalizedDrive);
+                }
             }
 
             string modeDesc = acc.DeliveryMode == CloudFileDeliveryMode.OnDemandReference
                 ? "Referencia en Nube (Descarga al abrir)"
                 : "Copia Local en Disco";
 
+            string statusText = !acc.IsEnabled
+                ? "Deshabilitada (Unidad en pausa)"
+                : acc.LastSyncedAtUtc.HasValue
+                    ? $"Activa ({acc.LastSyncedAtUtc.Value.ToLocalTime():dd/MM HH:mm:ss})"
+                    : "Habilitada y unidad montada";
+
             ConnectedAccounts.Add(new CloudAccountItemViewModel
             {
                 Id = acc.Id,
+                IsEnabled = acc.IsEnabled,
+                EnabledStatusText = acc.IsEnabled ? "Habilitada" : "Deshabilitada",
                 ProviderType = acc.ProviderType,
                 VirtualDriveLetter = normalizedDrive,
                 DeliveryMode = acc.DeliveryMode,
@@ -200,9 +223,7 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
                 AccountEmailOrUser = acc.AccountEmailOrUser,
                 LocalSyncRootPath = acc.LocalSyncRootPath,
                 VirtualFilesCount = acc.VirtualFiles.Count,
-                LastSyncText = acc.LastSyncedAtUtc.HasValue
-                    ? acc.LastSyncedAtUtc.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")
-                    : "Unidad virtual activa"
+                LastSyncText = statusText
             });
         }
 
@@ -219,15 +240,17 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
             ? _driveMountService.NormalizeDriveLetter(SelectedVirtualDriveLetter)
             : SelectedVirtualDriveLetter.Trim();
 
-        // Construir ruta única por cuenta/usuario/letra para permitir múltiples usuarios de la misma nube o de distintas nubes
         string safeAlias = SanitizePathSegment(NewAccountDisplayName);
         string safeUser = SanitizePathSegment(NewAccountEmailOrUser);
         string driveTag = normalizedDrive.TrimEnd(':');
         string uniqueShortId = Guid.NewGuid().ToString("N")[..6];
 
+        string baseFolder = string.IsNullOrWhiteSpace(CustomBaseVfsDirectory)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "myLocalCloud")
+            : CustomBaseVfsDirectory.Trim();
+
         string candidateVfsFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "myLocalCloud",
+            baseFolder,
             $"VFS_{SelectedProviderType}_{driveTag}_{safeUser}_{safeAlias}_{uniqueShortId}");
 
         string isolatedVfsFolder = _coexistenceService is not null
@@ -273,10 +296,11 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
             VirtualDriveLetter = normalizedDrive,
             DeliveryMode = SelectedDeliveryMode,
             LocalSyncRootPath = isolatedVfsFolder,
-            EncryptedCredentialBlob = encryptedBlob
+            EncryptedCredentialBlob = encryptedBlob,
+            IsEnabled = true,
+            LastSyncedAtUtc = DateTimeOffset.UtcNow
         };
 
-        // Crear un archivo de bienvenida en la unidad virtual según el modo elegido (Referencia 0 bytes o Copia Local)
         string welcomeFileName = $"LEEME_{driveTag}_{SelectedProviderType}_{safeUser}.txt";
         var welcomePlaceholder = new VirtualFileItem
         {
@@ -313,17 +337,44 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         NewAccountSecretOrToken = string.Empty;
         await LoadAccountsAsync();
 
-        // Preparar sugerencia para poder cargar inmediatamente otro usuario de la misma nube o de otra nube
         int nextAccountNumber = ConnectedAccounts.Count + 1;
         NewAccountDisplayName = $"{SelectedProviderType} Cuenta {nextAccountNumber}";
         NewAccountEmailOrUser = $"usuario{nextAccountNumber}@gmail.com";
 
-        StatusHeadline = $"Usuario '{account.AccountEmailOrUser}' ({account.ProviderType}) montado en la unidad virtual {normalizedDrive}\\";
+        StatusHeadline = $"✓ Cuenta '{account.DisplayName}' ({account.AccountEmailOrUser}) vinculada y activa en la unidad virtual {normalizedDrive}\\";
     }
 
     /// <summary>
-    /// Descarga bajo demanda en el acto los archivos de referencia de una cuenta al abrirlos desde su unidad virtual.
+    /// Habilita o deshabilita individualmente una cuenta cuando el usuario marca o desmarca su casilla.
+    /// Si se habilita, monta su unidad virtual y activa la sincronización; si se deshabilita, desmonta la unidad y pausa la cuenta.
     /// </summary>
+    public async Task SetAccountEnabledStateAsync(Guid accountId, bool isEnabled)
+    {
+        using IServiceScope scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<MyLocalCloudDbContext>();
+
+        CloudAccount? account = await db.CloudAccounts.FirstOrDefaultAsync(a => a.Id == accountId);
+        if (account is null || account.IsEnabled == isEnabled)
+            return;
+
+        account.IsEnabled = isEnabled;
+        await db.SaveChangesAsync();
+
+        if (isEnabled)
+        {
+            await _placeholderManager.RegisterSyncRootAsync(account);
+            StatusHeadline = $"✓ Cuenta '{account.DisplayName}' habilitada — Unidad virtual {account.VirtualDriveLetter}\\ montada y sincronizando";
+        }
+        else
+        {
+            _driveMountService?.UnmountVirtualDrive(account.VirtualDriveLetter);
+            await _placeholderManager.UnregisterSyncRootAsync(account.LocalSyncRootPath);
+            StatusHeadline = $"⏸ Cuenta '{account.DisplayName}' deshabilitada — Unidad virtual {account.VirtualDriveLetter}\\ desmontada temporalmente";
+        }
+
+        await LoadAccountsAsync();
+    }
+
     [RelayCommand]
     public async Task HydrateAccountFilesOnDemandAsync(Guid accountId)
     {
@@ -383,7 +434,7 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         await db.SaveChangesAsync();
 
         await LoadAccountsAsync();
-        StatusHeadline = $"Cuenta '{displayName}' desconectada y unidad virtual {driveLetter} liberada";
+        StatusHeadline = $"Cuenta '{displayName}' eliminada y unidad virtual {driveLetter} liberada";
     }
 
     [RelayCommand]

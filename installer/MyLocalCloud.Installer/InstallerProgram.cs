@@ -298,10 +298,44 @@ internal sealed class SetupWizardForm : Form
         {
             Text = defaultInstallDir,
             Location = new Point(24, 208),
-            Width = 590,
+            Width = 465,
             BackColor = Color.White,
             ForeColor = textDark,
             BorderStyle = BorderStyle.FixedSingle
+        };
+
+        var btnBrowseInstallPath = new Button
+        {
+            Text = "📂 Examinar...",
+            BackColor = grayPrimary,
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+            Location = new Point(500, 205),
+            Size = new Size(115, 29),
+            Cursor = Cursors.Hand
+        };
+        btnBrowseInstallPath.FlatAppearance.BorderSize = 0;
+        btnBrowseInstallPath.Click += (_, _) =>
+        {
+            using var folderDialog = new FolderBrowserDialog
+            {
+                Description = "Selecciona la carpeta donde deseas instalar la aplicación myLocalCloud v1.1:",
+                SelectedPath = Directory.Exists(_txtInstallPath.Text)
+                    ? _txtInstallPath.Text
+                    : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                ShowNewFolderButton = true
+            };
+
+            if (folderDialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(folderDialog.SelectedPath))
+            {
+                string chosen = folderDialog.SelectedPath.Trim();
+                if (!chosen.EndsWith("myLocalCloud", StringComparison.OrdinalIgnoreCase))
+                {
+                    chosen = Path.Combine(chosen, "myLocalCloud");
+                }
+                _txtInstallPath.Text = chosen;
+            }
         };
 
         _chkDesktopShortcut = new CheckBox
@@ -366,6 +400,7 @@ internal sealed class SetupWizardForm : Form
             lblDesc,
             lblPath,
             _txtInstallPath,
+            btnBrowseInstallPath,
             _chkDesktopShortcut,
             _chkStartWithWindows,
             _chkLaunchAfterInstall,
