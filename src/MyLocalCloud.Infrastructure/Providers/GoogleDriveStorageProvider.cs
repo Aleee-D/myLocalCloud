@@ -554,23 +554,101 @@ public sealed class GoogleDriveStorageProvider : CloudStorageProviderBase
 
     private static DeltaSyncPage CreateVirtualDriveCatalogDeltaPage(string? currentCursor)
     {
-        // Si es la primera sincronización de la unidad virtual (cursor vacío), poblar referencias iniciales de nube
+        // Si es la primera sincronización de la unidad virtual (cursor vacío), poblar la estructura de carpetas y archivos de la nube
         if (string.IsNullOrWhiteSpace(currentCursor))
         {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             return new DeltaSyncPage
             {
-                NewDeltaCursor = $"VFS_SYNC_CURSOR_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}",
+                NewDeltaCursor = $"VFS_SYNC_CURSOR_{now.ToUnixTimeSeconds()}",
                 UpsertedItems =
                 [
                     new RemoteCloudItem
                     {
-                        RemoteId = "vfs_gdrive_doc_bienvenida",
-                        Name = "Guia_Rapida_GoogleDrive_myLocalCloud.txt",
+                        RemoteId = "vfs_gdrive_folder_documentos",
+                        Name = @"Documentos",
+                        IsDirectory = true,
+                        MimeType = FolderMimeType,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_folder_fotos",
+                        Name = @"Fotos y Multimedia",
+                        IsDirectory = true,
+                        MimeType = FolderMimeType,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_folder_proyectos",
+                        Name = @"Proyectos Compartidos",
+                        IsDirectory = true,
+                        MimeType = FolderMimeType,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_folder_respaldos",
+                        Name = @"Respaldos en la Nube",
+                        IsDirectory = true,
+                        MimeType = FolderMimeType,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_doc_informe",
+                        ParentId = "vfs_gdrive_folder_documentos",
+                        Name = @"Documentos\Informe_General_Nube.txt",
                         IsDirectory = false,
                         SizeBytes = 1024,
-                        ContentHashOrETag = "etag_gdrive_v11_01",
+                        ContentHashOrETag = "etag_gdrive_v11_doc1",
                         MimeType = "text/plain",
-                        ModifiedAtUtc = DateTimeOffset.UtcNow
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_doc_notas",
+                        ParentId = "vfs_gdrive_folder_documentos",
+                        Name = @"Documentos\Notas_Editables_Usuario.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = "etag_gdrive_v11_doc2",
+                        MimeType = "text/plain",
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_proy_arquitectura",
+                        ParentId = "vfs_gdrive_folder_proyectos",
+                        Name = @"Proyectos Compartidos\Proyecto_Multicloud_VFS.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = "etag_gdrive_v11_proy1",
+                        MimeType = "text/plain",
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_fotos_catalogo",
+                        ParentId = "vfs_gdrive_folder_fotos",
+                        Name = @"Fotos y Multimedia\Indice_Multimedia_Nube.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = "etag_gdrive_v11_foto1",
+                        MimeType = "text/plain",
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = "vfs_gdrive_respaldo_config",
+                        ParentId = "vfs_gdrive_folder_respaldos",
+                        Name = @"Respaldos en la Nube\Resumen_Backup_Cifrado.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = "etag_gdrive_v11_bak1",
+                        MimeType = "text/plain",
+                        ModifiedAtUtc = now
                     }
                 ]
             };

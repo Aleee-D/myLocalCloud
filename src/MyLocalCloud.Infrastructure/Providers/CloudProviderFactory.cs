@@ -50,9 +50,70 @@ public abstract class ConfigurableCloudStorageProvider : CloudStorageProviderBas
         string? deltaCursor,
         CancellationToken cancellationToken = default)
     {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (string.IsNullOrWhiteSpace(deltaCursor))
+        {
+            string tag = ProviderType.ToString().ToLowerInvariant();
+            return Task.FromResult(new DeltaSyncPage
+            {
+                NewDeltaCursor = $"VFS_{ProviderType}_CURSOR_{now.ToUnixTimeSeconds()}",
+                UpsertedItems =
+                [
+                    new RemoteCloudItem
+                    {
+                        RemoteId = $"vfs_{tag}_folder_docs",
+                        Name = @"Documentos",
+                        IsDirectory = true,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = $"vfs_{tag}_folder_media",
+                        Name = @"Fotos y Multimedia",
+                        IsDirectory = true,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = $"vfs_{tag}_folder_shared",
+                        Name = @"Carpetas Compartidas",
+                        IsDirectory = true,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = $"vfs_{tag}_folder_backups",
+                        Name = @"Respaldos",
+                        IsDirectory = true,
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = $"vfs_{tag}_file_welcome",
+                        ParentId = $"vfs_{tag}_folder_docs",
+                        Name = $@"Documentos\Archivos_{ProviderType}_Nube.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = $"etag_{tag}_01",
+                        ModifiedAtUtc = now
+                    },
+                    new RemoteCloudItem
+                    {
+                        RemoteId = $"vfs_{tag}_file_notes",
+                        ParentId = $"vfs_{tag}_folder_shared",
+                        Name = $@"Carpetas Compartidas\Notas_{ProviderType}_Editables.txt",
+                        IsDirectory = false,
+                        SizeBytes = 1024,
+                        ContentHashOrETag = $"etag_{tag}_02",
+                        ModifiedAtUtc = now
+                    }
+                ]
+            });
+        }
+
         return Task.FromResult(new DeltaSyncPage
         {
-            NewDeltaCursor = deltaCursor ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()
+            NewDeltaCursor = deltaCursor ?? now.ToUnixTimeSeconds().ToString()
         });
     }
 

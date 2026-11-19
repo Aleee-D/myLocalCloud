@@ -101,6 +101,8 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
 
     public string DetailedAboutText => AppVersionInfo.DetailedAboutMessage;
 
+    public IVirtualDriveMountService? DriveMountService => _driveMountService;
+
     public ObservableCollection<CloudAccountItemViewModel> ConnectedAccounts { get; } = new();
 
     public ObservableCollection<string> AvailableDriveLetters { get; } = new();
@@ -203,6 +205,7 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
             if (acc.IsEnabled)
             {
                 await _placeholderManager.RegisterSyncRootAsync(acc);
+                EnsureCloudFoldersSeededInVirtualDrive(acc);
                 foreach (VirtualFileItem vFile in acc.VirtualFiles)
                 {
                     await _placeholderManager.EnsurePlaceholderCreatedAsync(acc, vFile);
@@ -431,7 +434,9 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         await db.SaveChangesAsync();
 
         await _placeholderManager.RegisterSyncRootAsync(account);
+        EnsureCloudFoldersSeededInVirtualDrive(account);
         await _placeholderManager.EnsurePlaceholderCreatedAsync(account, welcomePlaceholder);
+        await _syncEngine.ReconcileAccountChangesAsync(account.Id);
 
         if (SelectedDeliveryMode == CloudFileDeliveryMode.LocalCopy)
         {
@@ -574,6 +579,45 @@ public sealed partial class MainControlPanelViewModel : ObservableObject
         SyncIntervalMinutes = clamped;
         _syncEngine.SyncInterval = TimeSpan.FromMinutes(clamped);
         StatusHeadline = $"Intervalo de sincronización periódica ajustado a cada {clamped} min.";
+    }
+
+    private static void EnsureCloudFoldersSeededInVirtualDrive(CloudAccount account)
+    {
+        if (string.IsNullOrWhiteSpace(account.LocalSyncRootPath))
+            return;
+
+        try
+        {
+            Directory.CreateDirectory(account.LocalSyncRootPath);
+
+            string[] cloudFolders =
+            [
+                "Documentos",
+                "Fotos y Multimedia",
+                "Proyectos Compartidos",
+                "Respaldos en la Nube"
+            ];
+
+            foreach (string folder in cloudFolders)
+            {
+                Directory.CreateDirectory(Path.Combine(account.LocalSyncRootPath, folder));
+            }
+
+            string docFile = Path.Combine(account.LocalSyncRootPath, "Documentos", $"Informe_{account.ProviderType}_Nube.txt");
+            if (!File.Exists(docFile) && Directory.GetFiles(Path.Combine(account.LocalSyncRootPath, "Documentos")).Length == 0)
+            {
+                File.WriteAllText(
+                    docFile,
+                    $"Documento en la nube de {account.ProviderType} ({account.AccountEmailOrUser}) en unidad virtual {account.VirtualDriveLetter}\\.\r\n" +
+                    $"Puedes navegar estas carpetas localmente y abrir, editar, crear o eliminar archivos y carpetas.\r\n" +
+                    $"{AppVersionInfo.OfficialVersionMessage}\r\n",
+                    Encoding.UTF8);
+            }
+        }
+        catch
+        {
+            // Ignorar si ya existen
+        }
     }
 
     private static string SanitizePathSegment(string value)

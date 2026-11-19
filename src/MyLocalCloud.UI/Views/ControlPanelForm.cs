@@ -165,14 +165,18 @@ public sealed class ControlPanelForm : Form
             RefreshUiFromViewModel();
         };
 
-        var btnOpenVfsFolder = CreateActionButton("📂 Abrir carpeta raíz VFS", PrimarySkyBlue, Color.White, new Point(645, 10), new Size(195, 36));
+        var btnOpenVfsFolder = CreateActionButton("📂 Abrir carpeta raíz VFS", PrimarySkyBlue, Color.White, new Point(635, 10), new Size(175, 36));
         btnOpenVfsFolder.Click += (_, _) => OpenVfsRootInExplorer(_txtBaseVfsPath?.Text);
+
+        var btnManageVirtualDrives = CreateActionButton("💿 Administrar Discos Virtuales", PrimaryGrayDark, Color.White, new Point(820, 10), new Size(205, 36));
+        btnManageVirtualDrives.Click += (_, _) => OpenVirtualDriveManagerDialog();
 
         syncBarPanel.Controls.Add(btnSyncNow);
         syncBarPanel.Controls.Add(_btnPauseResume);
         syncBarPanel.Controls.Add(lblInterval);
         syncBarPanel.Controls.Add(_numSyncMinutes);
         syncBarPanel.Controls.Add(btnOpenVfsFolder);
+        syncBarPanel.Controls.Add(btnManageVirtualDrives);
 
         // --- 3. Panel de Registro Multi-Usuario, Unidad Virtual y Carpeta Temporal de Descargas ---
         var addAccountGroup = new Panel
@@ -471,8 +475,8 @@ public sealed class ControlPanelForm : Form
             "☑ Habilitar / Deshabilitar",
             PrimarySkyBlueDeep,
             Color.White,
-            new Point(415, 12),
-            new Size(185, 36));
+            new Point(325, 12),
+            new Size(170, 36));
         btnToggleEnable.Click += async (_, _) =>
         {
             if (_accountsListView.SelectedItems.Count > 0 &&
@@ -484,20 +488,28 @@ public sealed class ControlPanelForm : Form
             }
         };
 
-        var btnOpenDrive = CreateActionButton(
-            "💿 Abrir Unidad Virtual",
+        var btnNavigateFolders = CreateActionButton(
+            "📂 Navegar Carpetas y Archivos",
             PrimarySkyBlue,
             Color.White,
-            new Point(610, 12),
-            new Size(190, 36));
+            new Point(502, 12),
+            new Size(215, 36));
+        btnNavigateFolders.Click += (_, _) => OpenCloudDriveNavigatorDialog();
+
+        var btnOpenDrive = CreateActionButton(
+            "🖥 Abrir en Explorer",
+            PrimarySkyBlueDeep,
+            Color.White,
+            new Point(724, 12),
+            new Size(148, 36));
         btnOpenDrive.Click += async (_, _) => await OpenSelectedVirtualDriveAndHydrateOnDemandAsync();
 
         var btnRemoveSelected = CreateActionButton(
             "🗑 Eliminar Cuenta",
             PrimaryGrayMedium,
             Color.White,
-            new Point(810, 12),
-            new Size(155, 36));
+            new Point(879, 12),
+            new Size(145, 36));
         btnRemoveSelected.Click += async (_, _) =>
         {
             if (_accountsListView.SelectedItems.Count > 0 &&
@@ -510,6 +522,7 @@ public sealed class ControlPanelForm : Form
 
         footerPanel.Controls.Add(lblVersionFooter);
         footerPanel.Controls.Add(btnToggleEnable);
+        footerPanel.Controls.Add(btnNavigateFolders);
         footerPanel.Controls.Add(btnOpenDrive);
         footerPanel.Controls.Add(btnRemoveSelected);
 
@@ -625,6 +638,58 @@ public sealed class ControlPanelForm : Form
             "Cuenta Vinculada Exitosamente — myLocalCloud v1.1",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
+    }
+
+    private void OpenVirtualDriveManagerDialog()
+    {
+        if (_viewModel.DriveMountService is null)
+            return;
+
+        using var managerForm = new VirtualDriveManagerForm(_viewModel, _viewModel.DriveMountService);
+        managerForm.ShowDialog(this);
+        RefreshUiFromViewModel();
+    }
+
+    private void OpenCloudDriveNavigatorDialog()
+    {
+        CloudAccountItemViewModel? targetAccount = null;
+
+        if (_accountsListView.SelectedItems.Count > 0 &&
+            _accountsListView.SelectedItems[0].Tag is Guid selectedId)
+        {
+            targetAccount = _viewModel.ConnectedAccounts.FirstOrDefault(a => a.Id == selectedId);
+        }
+        else
+        {
+            targetAccount = _viewModel.ConnectedAccounts.FirstOrDefault(a => a.IsEnabled)
+                         ?? _viewModel.ConnectedAccounts.FirstOrDefault();
+        }
+
+        if (targetAccount is null)
+        {
+            MessageBox.Show(
+                this,
+                "Primero registra o selecciona una cuenta de nube en la lista para navegar sus carpetas y archivos.",
+                "Selecciona una cuenta",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!targetAccount.IsEnabled)
+        {
+            MessageBox.Show(
+                this,
+                $"La cuenta '{targetAccount.DisplayName}' está deshabilitada. Marca su casilla [✓] para habilitarla y navegar su unidad virtual {targetAccount.VirtualDriveLetter}\\.",
+                "Cuenta Deshabilitada",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        using var navigatorForm = new CloudDriveNavigatorForm(_viewModel, targetAccount);
+        navigatorForm.ShowDialog(this);
+        RefreshUiFromViewModel();
     }
 
     private async Task OpenSelectedVirtualDriveAndHydrateOnDemandAsync()

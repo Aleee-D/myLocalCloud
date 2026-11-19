@@ -7,9 +7,9 @@ using MyLocalCloud.Domain.Interfaces;
 namespace MyLocalCloud.ShellIntegration;
 
 /// <summary>
-/// Servicio nativo de Windows que monta y desmonta letras de unidad de disco virtual (ej. M:, N:, O:, Z:)
-/// para cada cuenta de usuario multicloud utilizando la API Win32 <c>DefineDosDeviceW</c> (<c>kernel32.dll</c>).
-/// Permite que cada cuenta aparezca con su propia letra de disco en "Este equipo" dentro del Explorador de Windows.
+/// Servicio nativo de Windows que monta, inspecciona y elimina letras de unidad de disco virtual (ej. M:, N:, O:, Z:)
+/// utilizando la API Win32 <c>DefineDosDeviceW</c> y <c>QueryDosDeviceW</c> (<c>kernel32.dll</c>).
+/// Permite listar todos los discos virtuales montados en el sistema y eliminar los que no se utilizan.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
@@ -19,7 +19,7 @@ public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
     private const uint DDD_EXACT_MATCH_ON_REMOVE = 0x00000004;
 
     private static readonly char[] CandidateLetters =
-        ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'H', 'I', 'J', 'K', 'L'];
+        ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'H', 'I', 'J', 'K', 'L', 'E', 'F', 'G'];
 
     private readonly Dictionary<string, string> _mountedByUs = new(StringComparer.OrdinalIgnoreCase);
 
@@ -47,6 +47,82 @@ public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
         return $"{letter}:";
     }
 
+    /// <summary>
+    /// Inspecciona todas las letras de unidad (D: a Z:) en Windows mediante <c>QueryDosDeviceW</c>.
+    /// Identifica únicamente las unidades de disco virtuales mapeadas a carpetas (<c>\??\...</c>),
+    /// excluyendo discos duros físicos (<c>\Device\HarddiskVolume...</c>).
+    /// </summary>
+    public IReadOnlyList<MountedVirtualDriveInfo> GetAllMountedVirtualDrives(
+        IReadOnlyDictionary<string, string>? activeAccountDrives = null)
+    {
+        var results = new List<MountedVirtualDriveInfo>();
+        var buffer = new StringBuilder(1024);
+
+        for (char c = 'D'; c <= 'Z'; c++)
+        {
+            string driveLetter = $"{c}:";
+            buffer.Clear();
+            uint chars = QueryDosDeviceW(driveLetter, buffer, (uint)buffer.Capacity);
+            if (chars == 0)
+                continue;
+
+            string rawTarget = buffer.ToString();
+            int nullIdx = rawTarget.IndexOf('\0');
+            if (nullIdx >= 0)
+            {
+                rawTarget = rawTarget[..nullIdx];
+            }
+
+            // Las unidades de disco virtuales mapeadas con DefineDosDeviceW / subst comienzan por "\??\"
+            if (!rawTarget.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string cleanFolderPath = rawTarget[4..];
+            string label = GetExplorerDriveLabel(c);
+
+            bool isUsed = false;
+            string? accountName = null;
+            if (activeAccountDrives is not null &&
+                activeAccountDrives.TryGetValue(driveLetter, out string? assignedAcc))
+            {
+                isUsed = true;
+                accountName = assignedAcc;
+            }
+
+            results.Add(new MountedVirtualDriveInfo(
+                DriveLetter: driveLetter,
+                TargetFolderPath: cleanFolderPath,
+                VolumeLabel: string.IsNullOrWhiteSpace(label) ? "Disco Virtual" : label,
+                IsUsedByActiveAccount: isUsed,
+                AssignedAccountName: accountName));
+        }
+
+        return results;
+    }
+
+    public int RemoveAllUnusedVirtualDrives(IEnumerable<string> activeAccountDriveLetters)
+    {
+        var activeSet = new HashSet<string>(
+            (activeAccountDriveLetters ?? Array.Empty<string>()).Select(NormalizeDriveLetter),
+            StringComparer.OrdinalIgnoreCase);
+
+        IReadOnlyList<MountedVirtualDriveInfo> allVirtualDrives = GetAllMountedVirtualDrives();
+        int removedCount = 0;
+
+        foreach (MountedVirtualDriveInfo vDrive in allVirtualDrives)
+        {
+            if (!activeSet.Contains(vDrive.DriveLetter))
+            {
+                if (UnmountVirtualDrive(vDrive.DriveLetter))
+                {
+                    removedCount++;
+                }
+            }
+        }
+
+        return removedCount;
+    }
+
     public IReadOnlyList<string> GetAvailableDriveLetters(IEnumerable<string>? currentlyAssignedLetters = null)
     {
         var occupied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -56,11 +132,7 @@ public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
             foreach (DriveInfo drive in DriveInfo.GetDrives())
             {
                 string norm = NormalizeDriveLetter(drive.Name);
-                // Si una letra fue montada por nosotros mismos en esta sesión, sólo se excluye si está en currentlyAssignedLetters
-                if (!_mountedByUs.ContainsKey(norm))
-                {
-                    occupied.Add(norm);
-                }
+                occupied.Add(norm);
             }
         }
         catch
@@ -105,10 +177,17 @@ public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
         string fullTargetDir = Path.GetFullPath(localSyncRootPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         Directory.CreateDirectory(fullTargetDir);
 
-        // Si ya estaba mapeada a otra ruta de myLocalCloud, remover mapeo previo
-        if (_mountedByUs.TryGetValue(normalizedLetter, out string? previousTarget))
+        // Si ya estaba mapeada a otra ruta previa en el sistema, remover la definición anterior primero
+        string? existingRawTarget = GetRawDosDeviceTarget(normalizedLetter);
+        if (!string.IsNullOrEmpty(existingRawTarget) &&
+            existingRawTarget.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase))
         {
-            DefineDosDeviceW(DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE, normalizedLetter, $@"\??\{previousTarget}");
+            string existingClean = existingRawTarget[4..];
+            if (!string.Equals(existingClean, fullTargetDir, StringComparison.OrdinalIgnoreCase))
+            {
+                DefineDosDeviceW(DDD_REMOVE_DEFINITION | DDD_RAW_TARGET_PATH, normalizedLetter, existingRawTarget);
+                DefineDosDeviceW(DDD_REMOVE_DEFINITION, normalizedLetter, existingClean);
+            }
         }
 
         string ntTargetPath = $@"\??\{fullTargetDir}";
@@ -128,29 +207,61 @@ public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
     {
         string normalizedLetter = NormalizeDriveLetter(driveLetter);
 
-        bool removed;
-        if (_mountedByUs.TryGetValue(normalizedLetter, out string? targetDir))
+        string? existingRawTarget = GetRawDosDeviceTarget(normalizedLetter);
+        bool removed = false;
+
+        if (!string.IsNullOrEmpty(existingRawTarget))
         {
-            removed = DefineDosDeviceW(DDD_REMOVE_DEFINITION, normalizedLetter, targetDir)
-                   || DefineDosDeviceW(DDD_REMOVE_DEFINITION | DDD_RAW_TARGET_PATH, normalizedLetter, $@"\??\{targetDir}")
-                   || DefineDosDeviceW(DDD_REMOVE_DEFINITION, normalizedLetter, null);
-            _mountedByUs.Remove(normalizedLetter);
+            removed = DefineDosDeviceW(DDD_REMOVE_DEFINITION | DDD_RAW_TARGET_PATH | DDD_EXACT_MATCH_ON_REMOVE, normalizedLetter, existingRawTarget)
+                   || DefineDosDeviceW(DDD_REMOVE_DEFINITION | DDD_RAW_TARGET_PATH, normalizedLetter, existingRawTarget);
+
+            if (!removed && existingRawTarget.StartsWith(@"\??\", StringComparison.OrdinalIgnoreCase))
+            {
+                string cleanPath = existingRawTarget[4..];
+                removed = DefineDosDeviceW(DDD_REMOVE_DEFINITION, normalizedLetter, cleanPath);
+            }
         }
-        else
+
+        if (!removed)
         {
             removed = DefineDosDeviceW(DDD_REMOVE_DEFINITION, normalizedLetter, null);
         }
 
+        _mountedByUs.Remove(normalizedLetter);
         TryRemoveExplorerDriveLabel(normalizedLetter[0]);
-        return removed;
+        return removed || !IsDriveMounted(normalizedLetter);
     }
 
     public bool IsDriveMounted(string driveLetter)
     {
         string normalizedLetter = NormalizeDriveLetter(driveLetter);
-        var buffer = new StringBuilder(512);
+        return !string.IsNullOrEmpty(GetRawDosDeviceTarget(normalizedLetter));
+    }
+
+    private static string? GetRawDosDeviceTarget(string normalizedLetter)
+    {
+        var buffer = new StringBuilder(1024);
         uint chars = QueryDosDeviceW(normalizedLetter, buffer, (uint)buffer.Capacity);
-        return chars > 0;
+        if (chars == 0)
+            return null;
+
+        string raw = buffer.ToString();
+        int nullIdx = raw.IndexOf('\0');
+        return nullIdx >= 0 ? raw[..nullIdx] : raw;
+    }
+
+    private static string GetExplorerDriveLabel(char driveChar)
+    {
+        try
+        {
+            using RegistryKey? labelKey = Registry.CurrentUser.OpenSubKey(
+                $@"Software\Microsoft\Windows\CurrentVersion\Explorer\DriveIcons\{driveChar}\DefaultLabel");
+            return labelKey?.GetValue(null) as string ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private static void TrySetExplorerDriveLabel(char driveChar, string volumeLabel)
@@ -166,7 +277,7 @@ public sealed class WindowsVirtualDriveMountService : IVirtualDriveMountService
         }
         catch
         {
-            // Ignorar si políticas de grupo restringen personalización de etiquetas en HKCU
+            // Ignorar si políticas restringen personalización de etiquetas en HKCU
         }
     }
 

@@ -171,6 +171,50 @@ public sealed class VirtualDriveAndMultiAccountTests : IDisposable
         Assert.Contains("GB libres", driveStatus, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void VirtualDriveManager_ListsMountedVirtualDrives_And_RemovesUnusedOnes()
+    {
+        // Arrange
+        var driveService = _serviceProvider.GetRequiredService<IVirtualDriveMountService>();
+        IReadOnlyList<string> freeLetters = driveService.GetAvailableDriveLetters();
+        if (freeLetters.Count < 2)
+            return;
+
+        string activeLetter = freeLetters[^2];
+        string unusedLetter = freeLetters[^1];
+
+        string activeFolder = Path.Combine(_tempDir, "ActiveAccountDrive");
+        string unusedFolder = Path.Combine(_tempDir, "UnusedOrphanDrive");
+
+        bool m1 = driveService.MountVirtualDrive(activeLetter, activeFolder, "Active Cloud Drive");
+        bool m2 = driveService.MountVirtualDrive(unusedLetter, unusedFolder, "Unused Cloud Drive");
+        if (m1) _mountedTestLetters.Add(activeLetter);
+        if (m2) _mountedTestLetters.Add(unusedLetter);
+
+        var activeMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [activeLetter] = "GoogleDrive - alejandro@android.ar"
+        };
+
+        // Act 1: Listar todos los discos virtuales montados
+        IReadOnlyList<MountedVirtualDriveInfo> mountedList = driveService.GetAllMountedVirtualDrives(activeMap);
+        Assert.Contains(mountedList, d => d.DriveLetter.Equals(activeLetter, StringComparison.OrdinalIgnoreCase) && d.IsUsedByActiveAccount);
+        Assert.Contains(mountedList, d => d.DriveLetter.Equals(unusedLetter, StringComparison.OrdinalIgnoreCase) && !d.IsUsedByActiveAccount);
+
+        // Act 2: Eliminar el disco virtual que no se utiliza
+        bool removedUnused = driveService.UnmountVirtualDrive(unusedLetter);
+        _mountedTestLetters.Remove(unusedLetter);
+
+        // Assert
+        Assert.True(removedUnused);
+        Assert.False(driveService.IsDriveMounted(unusedLetter));
+        Assert.True(driveService.IsDriveMounted(activeLetter));
+
+        // Cleanup
+        driveService.UnmountVirtualDrive(activeLetter);
+        _mountedTestLetters.Remove(activeLetter);
+    }
+
     public void Dispose()
     {
         var driveService = _serviceProvider.GetService<IVirtualDriveMountService>();

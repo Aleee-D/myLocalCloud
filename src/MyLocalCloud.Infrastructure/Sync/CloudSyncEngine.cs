@@ -256,13 +256,28 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
 
         DeltaSyncPage deltaPage = await provider.GetChangesAsync(secret, cursor, cancellationToken).ConfigureAwait(false);
 
-        // 1. Procesar altas y modificaciones remotas
+        // 1. Procesar altas y modificaciones remotas (manteniendo jerarquía de carpetas y archivos)
+        var folderPathById = account.VirtualFiles
+            .Where(v => v.IsDirectory)
+            .ToDictionary(v => v.RemoteItemId, v => v.RelativeLocalPath, StringComparer.OrdinalIgnoreCase);
+
+        foreach (RemoteCloudItem remoteFolder in deltaPage.UpsertedItems.Where(i => i.IsDirectory))
+        {
+            string folderRelPath = ResolveHierarchicalRelativePath(remoteFolder, folderPathById);
+            folderPathById[remoteFolder.RemoteId] = folderRelPath;
+        }
+
         foreach (RemoteCloudItem remoteItem in deltaPage.UpsertedItems)
         {
             VirtualFileItem? existingItem = account.VirtualFiles
                 .FirstOrDefault(v => v.RemoteItemId == remoteItem.RemoteId);
 
-            string normalizedRelativePath = NormalizeRelativePath(remoteItem.Name);
+            string normalizedRelativePath = ResolveHierarchicalRelativePath(remoteItem, folderPathById);
+            string cleanFileName = Path.GetFileName(normalizedRelativePath.TrimEnd('\\', '/'));
+            if (string.IsNullOrWhiteSpace(cleanFileName))
+            {
+                cleanFileName = remoteItem.Name;
+            }
 
             if (existingItem is null)
             {
@@ -272,7 +287,7 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
                     RemoteItemId = remoteItem.RemoteId,
                     RemoteParentId = remoteItem.ParentId,
                     RelativeLocalPath = normalizedRelativePath,
-                    FileName = remoteItem.Name,
+                    FileName = cleanFileName,
                     IsDirectory = remoteItem.IsDirectory,
                     FileSizeBytes = remoteItem.SizeBytes,
                     ContentHashOrETag = remoteItem.ContentHashOrETag,
@@ -294,7 +309,7 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
             }
             else if (existingItem.ContentHashOrETag != remoteItem.ContentHashOrETag ||
                      existingItem.FileSizeBytes != remoteItem.SizeBytes ||
-                     existingItem.FileName != remoteItem.Name)
+                     existingItem.RelativeLocalPath != normalizedRelativePath)
             {
                 // Detectar conflicto si el archivo local también tiene una subida pendiente
                 if (existingItem.SyncState == FileSyncState.PendingUpload)
@@ -303,7 +318,7 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
                 }
                 else
                 {
-                    existingItem.FileName = remoteItem.Name;
+                    existingItem.FileName = cleanFileName;
                     existingItem.RelativeLocalPath = normalizedRelativePath;
                     existingItem.FileSizeBytes = remoteItem.SizeBytes;
                     existingItem.ContentHashOrETag = remoteItem.ContentHashOrETag;
@@ -356,7 +371,7 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
         }
 
         account.RemoteDeltaCursor = deltaPage.NewDeltaCursor;
-        changesApplied += ScanLocalVirtualDriveFiles(dbContext, account);
+        changesApplied += ScanLocalVirtualDriveFiles(dbContext, account, checkLocalDeletions: _placeholderManager is not null);
         account.LastSyncedAtUtc = DateTimeOffset.UtcNow;
 
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -364,28 +379,95 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
     }
 
     /// <summary>
-    /// Escanea los archivos colocados o creados por el usuario dentro de la unidad de disco virtual (ej. M:\, N:\)
-    /// para indexarlos en la base de datos cifrada SQLCipher y encolar su sincronización.
+    /// Escanea las carpetas y archivos colocados, editados o eliminados localmente por el usuario
+    /// dentro de la unidad de disco virtual (ej. M:\, N:\) para sincronizarlos con la base de datos cifrada SQLCipher.
     /// </summary>
-    private static int ScanLocalVirtualDriveFiles(MyLocalCloudDbContext dbContext, CloudAccount account)
+    private static int ScanLocalVirtualDriveFiles(
+        MyLocalCloudDbContext dbContext,
+        CloudAccount account,
+        bool checkLocalDeletions)
     {
         if (string.IsNullOrWhiteSpace(account.LocalSyncRootPath) || !Directory.Exists(account.LocalSyncRootPath))
             return 0;
 
-        int discovered = 0;
+        int changesCount = 0;
         try
         {
+            // 1. Detectar carpetas o archivos previamente sincronizados que el usuario eliminó localmente en la unidad virtual
+            if (checkLocalDeletions)
+            {
+                foreach (VirtualFileItem tracked in account.VirtualFiles.ToList())
+                {
+                    if (dbContext.Entry(tracked).State == EntityState.Added)
+                        continue;
+
+                    string fullTrackedPath = Path.Combine(
+                        account.LocalSyncRootPath,
+                        tracked.RelativeLocalPath.TrimStart('\\', '/'));
+
+                    bool existsOnDisk = tracked.IsDirectory
+                        ? Directory.Exists(fullTrackedPath)
+                        : File.Exists(fullTrackedPath);
+
+                    if (!existsOnDisk)
+                    {
+                        dbContext.SyncQueue.Add(new SyncQueueItem
+                        {
+                            CloudAccountId = account.Id,
+                            OperationType = SyncOperationType.DeleteRemote,
+                            RelativePath = tracked.RelativeLocalPath,
+                            RemoteItemId = tracked.RemoteItemId,
+                            Priority = 5
+                        });
+
+                        dbContext.VirtualFiles.Remove(tracked);
+                        account.VirtualFiles.Remove(tracked);
+                        changesCount++;
+                    }
+                }
+            }
+
+            // 2. Detectar nuevas carpetas creadas por el usuario en la unidad virtual
+            string[] allDirs = Directory.GetDirectories(account.LocalSyncRootPath, "*", SearchOption.AllDirectories);
+            foreach (string fullDirPath in allDirs)
+            {
+                string relativeDir = "\\" + Path.GetRelativePath(account.LocalSyncRootPath, fullDirPath).Replace('/', '\\').TrimStart('\\');
+                bool dirTracked = account.VirtualFiles.Any(
+                    v => string.Equals(v.RelativeLocalPath, relativeDir, StringComparison.OrdinalIgnoreCase));
+
+                if (!dirTracked)
+                {
+                    var di = new DirectoryInfo(fullDirPath);
+                    var dirItem = new VirtualFileItem
+                    {
+                        CloudAccountId = account.Id,
+                        RemoteItemId = $"local_folder_{Guid.NewGuid():N}",
+                        RelativeLocalPath = relativeDir,
+                        FileName = di.Name,
+                        IsDirectory = true,
+                        FileSizeBytes = 0,
+                        HydrationState = HydrationState.FullyHydrated,
+                        SyncState = FileSyncState.InSync
+                    };
+                    dbContext.VirtualFiles.Add(dirItem);
+                    account.VirtualFiles.Add(dirItem);
+                    changesCount++;
+                }
+            }
+
+            // 3. Detectar archivos nuevos o editados localmente en la unidad virtual
             string[] allFiles = Directory.GetFiles(account.LocalSyncRootPath, "*", SearchOption.AllDirectories);
             foreach (string fullFilePath in allFiles)
             {
                 string relativePath = "\\" + Path.GetRelativePath(account.LocalSyncRootPath, fullFilePath).Replace('/', '\\').TrimStart('\\');
+                var fi = new FileInfo(fullFilePath);
+                DateTimeOffset diskWriteUtc = new(fi.LastWriteTimeUtc, TimeSpan.Zero);
 
-                bool alreadyTracked = account.VirtualFiles.Any(
+                VirtualFileItem? existing = account.VirtualFiles.FirstOrDefault(
                     v => string.Equals(v.RelativeLocalPath, relativePath, StringComparison.OrdinalIgnoreCase));
 
-                if (!alreadyTracked)
+                if (existing is null)
                 {
-                    var fi = new FileInfo(fullFilePath);
                     var localItem = new VirtualFileItem
                     {
                         CloudAccountId = account.Id,
@@ -396,8 +478,8 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
                         FileSizeBytes = fi.Length,
                         HydrationState = fi.Length > 0 ? HydrationState.FullyHydrated : HydrationState.PlaceholderOnly,
                         SyncState = fi.Length > 0 ? FileSyncState.PendingUpload : FileSyncState.InSync,
-                        LocalModifiedAtUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero),
-                        RemoteModifiedAtUtc = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero)
+                        LocalModifiedAtUtc = diskWriteUtc,
+                        RemoteModifiedAtUtc = diskWriteUtc
                     };
 
                     dbContext.VirtualFiles.Add(localItem);
@@ -415,7 +497,29 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
                         });
                     }
 
-                    discovered++;
+                    changesCount++;
+                }
+                else if (fi.Length > 0 &&
+                         (existing.FileSizeBytes != fi.Length ||
+                          Math.Abs((diskWriteUtc - existing.LocalModifiedAtUtc).TotalSeconds) > 2))
+                {
+                    // El usuario editó y guardó el archivo localmente dentro de la unidad virtual
+                    existing.FileSizeBytes = fi.Length;
+                    existing.LocalModifiedAtUtc = diskWriteUtc;
+                    existing.HydrationState = HydrationState.FullyHydrated;
+                    existing.SyncState = FileSyncState.PendingUpload;
+
+                    dbContext.SyncQueue.Add(new SyncQueueItem
+                    {
+                        CloudAccountId = account.Id,
+                        VirtualFileItemId = existing.Id,
+                        OperationType = SyncOperationType.Upload,
+                        RelativePath = relativePath,
+                        RemoteItemId = existing.RemoteItemId,
+                        Priority = 8
+                    });
+
+                    changesCount++;
                 }
             }
         }
@@ -424,7 +528,27 @@ public sealed class CloudSyncEngine : ICloudSyncEngine, IDisposable, IAsyncDispo
             // Ignorar archivos bloqueados temporalmente por otra aplicación
         }
 
-        return discovered;
+        return changesCount;
+    }
+
+    private static string ResolveHierarchicalRelativePath(
+        RemoteCloudItem item,
+        IReadOnlyDictionary<string, string> folderPathById)
+    {
+        string rawName = item.Name.Replace('/', '\\').TrimStart('\\');
+        if (rawName.Contains('\\'))
+        {
+            return "\\" + rawName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.ParentId) &&
+            folderPathById.TryGetValue(item.ParentId, out string? parentRelPath) &&
+            !string.IsNullOrWhiteSpace(parentRelPath))
+        {
+            return $"{parentRelPath.TrimEnd('\\')}\\{rawName}";
+        }
+
+        return "\\" + rawName;
     }
 
     private async Task<int> ProcessPendingQueueCoreAsync(

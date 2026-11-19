@@ -15,7 +15,17 @@ public sealed record SyncStatusSnapshot(
     DateTimeOffset? NextScheduledSyncAtUtc);
 
 /// <summary>
-/// Servicio que monta y desmonta letras de unidad de disco virtual en Windows (ej. M:, N:, O:, Z:)
+/// Información detallada de una letra de unidad de disco virtual montada en Windows.
+/// </summary>
+public sealed record MountedVirtualDriveInfo(
+    string DriveLetter,
+    string TargetFolderPath,
+    string VolumeLabel,
+    bool IsUsedByActiveAccount,
+    string? AssignedAccountName);
+
+/// <summary>
+/// Servicio que monta, administra y desmonta letras de unidad de disco virtual en Windows (ej. M:, N:, O:, Z:)
 /// asociadas a las raíces virtuales de cada cuenta de usuario multicloud.
 /// </summary>
 public interface IVirtualDriveMountService
@@ -24,6 +34,17 @@ public interface IVirtualDriveMountService
     /// Devuelve las letras de unidad disponibles en el sistema (excluyendo unidades físicas y letras ya asignadas).
     /// </summary>
     IReadOnlyList<string> GetAvailableDriveLetters(IEnumerable<string>? currentlyAssignedLetters = null);
+
+    /// <summary>
+    /// Obtiene todas las unidades de disco virtuales (<c>DefineDosDeviceW</c> / <c>\??\...</c>) montadas actualmente en Windows,
+    /// indicando cuáles pertenecen a cuentas activas y cuáles están sin uso (huérfanas) para poder eliminarlas.
+    /// </summary>
+    IReadOnlyList<MountedVirtualDriveInfo> GetAllMountedVirtualDrives(IReadOnlyDictionary<string, string>? activeAccountDrives = null);
+
+    /// <summary>
+    /// Desmonta y elimina todas las unidades de disco virtuales que no estén asignadas a ninguna cuenta activa.
+    /// </summary>
+    int RemoveAllUnusedVirtualDrives(IEnumerable<string> activeAccountDriveLetters);
 
     /// <summary>
     /// Normaliza una letra de unidad al formato "X:".
@@ -36,7 +57,7 @@ public interface IVirtualDriveMountService
     bool MountVirtualDrive(string driveLetter, string localSyncRootPath, string volumeLabel);
 
     /// <summary>
-    /// Desmonta una letra de unidad de disco virtual previamente registrada por myLocalCloud.
+    /// Desmonta una letra de unidad de disco virtual previamente registrada.
     /// </summary>
     bool UnmountVirtualDrive(string driveLetter);
 
